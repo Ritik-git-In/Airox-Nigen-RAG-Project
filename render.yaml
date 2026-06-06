@@ -1,0 +1,19 @@
+# Render.com deployment blueprint.
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo.
+# Then set KIMI_API_KEY in the service's Environment tab (it is NOT in the repo).
+services:
+  - type: web
+    name: rag-document-qa-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: KIMI_API_KEY
+        sync: false # set this secret in the Render dashboard
+      - key: KIMI_BASE_URL
+        value: https://api.moonshot.ai/v1
+      - key: KIMI_MODEL
+        value: moonshot-v1-32k
+      - key: PYTHON_VERSION
+        value: "3.12.10"

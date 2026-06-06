@@ -1,0 +1,18 @@
+# Core app
+streamlit>=1.40
+
+# PDF text extraction (keeps page numbers for citations)
+pypdf>=5.0
+
+# Vector database (persisted on disk) — also bundles the ONNX MiniLM
+# embedding model, so we get local embeddings without PyTorch.
+chromadb>=0.5
+
+# ONNX runtime powers the lightweight (torch-free) embedding model.
+onnxruntime>=1.16
+
+# Kimi / Moonshot is OpenAI-compatible, so we use the OpenAI SDK
+openai>=1.50
+
+# Load API keys from a .env file
+python-dotenv>=1.0

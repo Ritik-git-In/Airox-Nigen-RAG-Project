@@ -1,0 +1,26 @@
+# Secrets — never commit these
+.env
+
+# Runtime data: uploaded PDFs + the vector database
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Model cache (sentence-transformers downloads here on first run)
+.cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local settings (not part of the project)
+.claude/
+
+

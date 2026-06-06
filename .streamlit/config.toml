@@ -1,0 +1,18 @@
+[theme]
+base = "dark"
+primaryColor = "#7C6CF6"
+backgroundColor = "#0B0E16"
+secondaryBackgroundColor = "#141A28"
+textColor = "#E8EAF2"
+font = "sans serif"
+
+[server]
+# Don't re-open a new browser tab on every code change.
+headless = true
+# Apply code changes automatically without the "Rerun" prompt.
+runOnSave = true
+
+[client]
+# Removes the top-right toolbar entirely (Deploy button + the "running…/Stop"
+# status widget) at the server level, so it never flashes during load.
+toolbarMode = "minimal"
