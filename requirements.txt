@@ -6,7 +6,9 @@ pypdf>=5.0
 
 # Vector database (persisted on disk) — also bundles the ONNX MiniLM
 # embedding model, so we get local embeddings without PyTorch.
-chromadb>=0.5
+# Pinned to the version verified locally so hosted builds (Streamlit Cloud)
+# reproduce the same dependency tree instead of resolving a broken combo.
+chromadb==1.5.9
 
 # ONNX runtime powers the lightweight (torch-free) embedding model.
 onnxruntime>=1.16
@@ -16,3 +18,11 @@ openai>=1.50
 
 # Load API keys from a .env file
 python-dotenv>=1.0
+
+# chromadb -> opentelemetry ships protobuf-generated code. On Streamlit Cloud the
+# resolver landed a NEW protobuf next to OLD generated code, which crashes at
+# import ("Descriptors cannot be created directly"). Pinning protobuf to 5.x keeps
+# the runtime AND the generated code on the modern descriptor style, and is
+# accepted by both streamlit (protobuf<8,>=3.20) and opentelemetry-proto (>=5,<7).
+# 6.x is the version verified locally.
+protobuf>=5,<7
