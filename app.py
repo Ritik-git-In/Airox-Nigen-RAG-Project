@@ -8,6 +8,16 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import os
+
+# chromadb pulls in opentelemetry, whose protobuf-generated code clashes with a
+# newer protobuf runtime on some hosts (e.g. Streamlit Cloud), raising a
+# TypeError in _CheckCalledFromGeneratedFile at import time. Force the pure-Python
+# protobuf parser so the import succeeds regardless of the installed version.
+# Must be set BEFORE chromadb is imported (i.e. before the `from rag` import).
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+
 import time
 
 import streamlit as st
