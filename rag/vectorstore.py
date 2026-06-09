@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 import chromadb
 
@@ -28,7 +29,14 @@ class Retrieved:
     distance: float
 
 
+@lru_cache(maxsize=1)
 def _client() -> chromadb.ClientAPI:
+    """Create the persistent client once and reuse it.
+
+    Streamlit reruns the whole script on every interaction; without this cache
+    a brand-new PersistentClient (with its own SQLite handle + HNSW load) was
+    built on each rerun, which was the main source of the lag.
+    """
     config.ensure_dirs()
     return chromadb.PersistentClient(path=str(config.CHROMA_DIR))
 
