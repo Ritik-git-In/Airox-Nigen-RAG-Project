@@ -39,7 +39,12 @@ class Answer:
 
 @lru_cache(maxsize=1)
 def _client() -> OpenAI:
-    return OpenAI(api_key=config.KIMI_API_KEY, base_url=config.KIMI_BASE_URL)
+    return OpenAI(
+        api_key=config.KIMI_API_KEY,
+        base_url=config.KIMI_BASE_URL,
+        timeout=60.0,  # never leave the user staring at an endless spinner
+        max_retries=2,
+    )
 
 
 def _format_context(chunks: list[Retrieved]) -> str:
@@ -62,6 +67,16 @@ def answer_question(question: str, chunks: list[Retrieved]) -> Answer:
             sources=[],
         )
 
+    if not config.kimi_is_configured():
+        return Answer(
+            text=(
+                "No Kimi API key is configured, so I can't compose an answer. "
+                "The most relevant excerpts from your documents are listed "
+                "below — set `KIMI_API_KEY` in `.env` to enable full answers."
+            ),
+            sources=chunks,
+        )
+
     context = _format_context(chunks)
     user_prompt = (
         f"Context excerpts from the user's PDFs:\n\n{context}\n\n"
@@ -69,12 +84,23 @@ def answer_question(question: str, chunks: list[Retrieved]) -> Answer:
         "Answer using only the context above, with inline [Source N] citations."
     )
 
-    response = _client().chat.completions.create(
-        model=config.KIMI_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,  # low — we want faithful, grounded answers
-    )
+    try:
+        response = _client().chat.completions.create(
+            model=config.KIMI_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,  # low — we want faithful, grounded answers
+        )
+    except Exception as exc:
+        # Surface a friendly message (with the excerpts we found) instead of
+        # letting a network/API error crash the app with a raw traceback.
+        return Answer(
+            text=(
+                "Sorry — the language model request failed "
+                f"({type(exc).__name__}). Please try again in a moment."
+            ),
+            sources=chunks,
+        )
     return Answer(text=response.choices[0].message.content or "", sources=chunks)

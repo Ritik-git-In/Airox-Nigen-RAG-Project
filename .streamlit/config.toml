@@ -11,6 +11,13 @@ font = "sans serif"
 headless = true
 # Apply code changes automatically without the "Rerun" prompt.
 runOnSave = true
+# Match the app's own MAX_FILE_MB limit so the uploader UI shows the real cap
+# instead of Streamlit's default "200MB per file".
+maxUploadSize = 25
+
+[browser]
+# No telemetry — slightly faster startup, nothing phoned home.
+gatherUsageStats = false
 
 [client]
 # Removes the top-right toolbar entirely (Deploy button + the "running…/Stop"

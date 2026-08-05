@@ -14,9 +14,12 @@ import time
 from pathlib import Path
 
 # ---- Limits (tune in one place) ----
-MAX_FILE_MB = 25  # per uploaded file
+MAX_FILE_MB = 25  # per uploaded file (browser uploads)
 MAX_FILES_PER_UPLOAD = 30  # files accepted in a single upload batch
-MAX_DOCS_PER_USER = 60  # safety cap on total indexed documents per user
+MAX_DOCS_PER_USER = 60  # cap on manually uploaded documents per user
+# Drive scans read files in place (no browser upload), so they get a higher
+# per-file cap and no per-user document cap — that's the whole point of them.
+MAX_DRIVE_FILE_MB = 200
 MAX_QUESTION_CHARS = 2000  # longest question we'll send to the model
 RATE_LIMIT_MAX = 20  # max questions ...
 RATE_LIMIT_WINDOW_S = 60  # ... per this many seconds, per session

@@ -8,15 +8,30 @@ the app run on small free-tier instances (e.g. Render's 512 MB). The model
 
 from __future__ import annotations
 
+import threading
 from functools import lru_cache
 
 from chromadb.utils import embedding_functions
 
+# The app warms the model up from a background thread while the user is still
+# logging in; the lock stops a concurrent first call from loading it twice.
+_embedder_lock = threading.Lock()
+
 
 @lru_cache(maxsize=1)
-def _embedder():
-    """Load (and memoize) the ONNX embedding function."""
+def _load_embedder():
     return embedding_functions.ONNXMiniLM_L6_V2()
+
+
+def _embedder():
+    """Load (and memoize) the ONNX embedding function, thread-safely."""
+    with _embedder_lock:
+        return _load_embedder()
+
+
+def warm_up() -> None:
+    """Download/load the model and embed once so the first real call is fast."""
+    embed_texts(["warm-up"])
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

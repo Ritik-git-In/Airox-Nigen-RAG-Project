@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -17,6 +18,11 @@ import chromadb
 from . import config
 from .chunking import Chunk
 from .embeddings import embed_query, embed_texts
+
+# The app warms the client up from a background thread while the user is still
+# logging in; the lock stops a concurrent first call from creating two
+# PersistentClients over the same SQLite files.
+_client_lock = threading.Lock()
 
 
 @dataclass
@@ -30,15 +36,25 @@ class Retrieved:
 
 
 @lru_cache(maxsize=1)
+def _build_client() -> chromadb.ClientAPI:
+    config.ensure_dirs()
+    return chromadb.PersistentClient(path=str(config.CHROMA_DIR))
+
+
 def _client() -> chromadb.ClientAPI:
-    """Create the persistent client once and reuse it.
+    """Create the persistent client once and reuse it (thread-safely).
 
     Streamlit reruns the whole script on every interaction; without this cache
     a brand-new PersistentClient (with its own SQLite handle + HNSW load) was
     built on each rerun, which was the main source of the lag.
     """
-    config.ensure_dirs()
-    return chromadb.PersistentClient(path=str(config.CHROMA_DIR))
+    with _client_lock:
+        return _build_client()
+
+
+def warm_up() -> None:
+    """Initialize the persistent client ahead of first use (app warm-up)."""
+    _client()
 
 
 def _collection_name(user_email: str) -> str:
@@ -61,21 +77,28 @@ def _get_collection(user_email: str):
     )
 
 
+# Chroma rejects very large ``add`` batches (max ~5461 records), and a single
+# text-heavy PDF can exceed that. Storing in slices also bounds the peak memory
+# used while embedding.
+_ADD_BATCH_SIZE = 500
+
+
 def add_chunks(user_email: str, chunks: list[Chunk]) -> int:
     """Embed and store chunks for a user. Returns the number stored."""
     if not chunks:
         return 0
     collection = _get_collection(user_email)
-    embeddings = embed_texts([c.text for c in chunks])
-    collection.add(
-        ids=[c.id for c in chunks],
-        documents=[c.text for c in chunks],
-        embeddings=embeddings,
-        metadatas=[
-            {"source": c.source, "page": c.page, "chunk_index": c.chunk_index}
-            for c in chunks
-        ],
-    )
+    for start in range(0, len(chunks), _ADD_BATCH_SIZE):
+        batch = chunks[start : start + _ADD_BATCH_SIZE]
+        collection.add(
+            ids=[c.id for c in batch],
+            documents=[c.text for c in batch],
+            embeddings=embed_texts([c.text for c in batch]),
+            metadatas=[
+                {"source": c.source, "page": c.page, "chunk_index": c.chunk_index}
+                for c in batch
+            ],
+        )
     return len(chunks)
 
 

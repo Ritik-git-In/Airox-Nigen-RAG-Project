@@ -13,11 +13,16 @@ import os
 # Chroma's anonymized telemetry adds startup/runtime overhead we don't need.
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
+import threading
 import time
 
 import streamlit as st
+import streamlit.components.v1 as components
 
-from rag import auth, config, pipeline, security, vectorstore
+# Only the lightweight modules are imported up front. The heavy ones
+# (vectorstore -> chromadb, pipeline -> openai) are imported lazily inside the
+# functions that need them, so a cold start renders the login page fast.
+from rag import auth, config, security
 
 st.set_page_config(
     page_title="PDF RAG Assistant",
@@ -257,6 +262,43 @@ def _init_state() -> None:
     st.session_state.setdefault("upload_mode", None)  # "pdf" | "folder"
 
 
+@st.cache_resource(show_spinner=False)
+def _start_backend_warmup() -> bool:
+    """Pre-load the heavy backend once per server process, off the main thread.
+
+    chromadb and the ONNX embedding model take several seconds to import,
+    initialize, and (first run only) download. Doing it in a background thread
+    while the user is still on the login page means their first upload or
+    question doesn't pay that cost.
+    """
+
+    def _warm() -> None:
+        try:
+            from rag import embeddings, vectorstore
+
+            vectorstore.warm_up()
+            embeddings.warm_up()
+        except Exception:
+            pass  # warm-up is best-effort; real calls will surface any error
+
+    threading.Thread(target=_warm, name="rag-warmup", daemon=True).start()
+    return True
+
+
+@st.cache_data(show_spinner=False)
+def _sources_for(user_email: str) -> list[str]:
+    """Cached list of a user's indexed documents.
+
+    Reads the lightweight per-user catalog (which migrates itself from the
+    vector store on first use) instead of scanning every chunk's metadata in
+    Chroma — essential once drive scans index thousands of PDFs. The cache is
+    cleared whenever documents are added or removed.
+    """
+    from rag import catalog
+
+    return catalog.sources(user_email)
+
+
 # --------------------------------------------------------------------------- #
 # Views                                                                        #
 # --------------------------------------------------------------------------- #
@@ -348,10 +390,45 @@ def sidebar(user_email: str) -> None:
             st.caption("Choose what you want to add")
             if st.button("Upload PDF", use_container_width=True, key="choose_pdf_upload"):
                 st.session_state.upload_mode = "pdf"
+                st.session_state.close_add_menu = True
                 st.rerun()
             if st.button("Upload Folder", use_container_width=True, key="choose_folder_upload"):
                 st.session_state.upload_mode = "folder"
+                st.session_state.close_add_menu = True
                 st.rerun()
+            if st.button("Scan Drive", use_container_width=True, key="choose_drive_scan"):
+                st.session_state.upload_mode = "drive"
+                st.session_state.close_add_menu = True
+                st.rerun()
+
+        # ``st.popover`` has no API to close itself, so after an option is
+        # chosen we nudge the (same-origin) parent page to dismiss it. The
+        # embedded counter makes the HTML unique per click — without it,
+        # Streamlit reuses the previous identical iframe and the script never
+        # runs again (which is why only the first selection used to close).
+        if st.session_state.pop("close_add_menu", False):
+            st.session_state.add_menu_close_count = (
+                st.session_state.get("add_menu_close_count", 0) + 1
+            )
+            components.html(
+                f"""
+                <script>
+                // close request #{st.session_state.add_menu_close_count}
+                setTimeout(function () {{
+                    const doc = window.parent.document;
+                    if (doc.querySelector('[data-baseweb="popover"]')) {{
+                        const trigger = doc.querySelector(
+                            '[data-testid="stSidebar"] [data-testid="stPopover"] button'
+                        );
+                        if (trigger) trigger.click();
+                    }}
+                    doc.dispatchEvent(new KeyboardEvent("keydown", {{key: "Escape", bubbles: true}}));
+                    doc.dispatchEvent(new KeyboardEvent("keyup", {{key: "Escape", bubbles: true}}));
+                }}, 100);
+                </script>
+                """,
+                height=0,
+            )
 
         uploads = []
         if st.session_state.upload_mode == "pdf":
@@ -369,8 +446,34 @@ def sidebar(user_email: str) -> None:
                 key="folder_pdf_upload",
                 help="All PDFs in the selected folder and its subfolders are included.",
             )
+        elif st.session_state.upload_mode == "drive":
+            st.caption(
+                "Index every PDF on a connected drive — files are read in "
+                "place, nothing is copied or uploaded."
+            )
+            from rag import drive_scan
+
+            drives = drive_scan.list_drives()
+            if not drives:
+                st.info("No drives detected. Connect a drive and try again.")
+            else:
+                drive = st.selectbox(
+                    "Choose a drive",
+                    drives,
+                    format_func=lambda d: d.describe(),
+                    key="drive_choice",
+                )
+                if st.button(
+                    "🔍 Scan & index this drive",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    # Picked up by main() after the sidebar renders; the scan
+                    # itself runs in the main area where there's room for
+                    # progress reporting.
+                    st.session_state.drive_scan_root = drive.root
         else:
-            st.caption("Use + Add to upload a PDF or a folder of PDFs.")
+            st.caption("Use + Add to upload a PDF, a folder, or scan a whole drive.")
 
         if uploads and st.button(
             "Index selected PDFs", type="primary", use_container_width=True
@@ -378,16 +481,43 @@ def sidebar(user_email: str) -> None:
             _index_uploads(user_email, uploads)
 
         st.divider()
-        st.subheader("Your documents")
-        sources = vectorstore.list_sources(user_email)
+        sources = _sources_for(user_email)
+        st.subheader(f"Your documents ({len(sources):,})" if sources else "Your documents")
         if not sources:
             st.caption("No documents indexed yet.")
-        for src in sources:
+        # Drive scans can index thousands of PDFs; rendering a row (plus a
+        # delete button) for each would make every rerun crawl. Cap the list.
+        _MAX_LISTED = 30
+        for src in sources[:_MAX_LISTED]:
             cols = st.columns([0.82, 0.18])
             cols[0].write(f"• {src}")
             if cols[1].button("🗑", key=f"del_{src}", help=f"Remove {src}"):
+                from rag import catalog, vectorstore
+
                 vectorstore.delete_source(user_email, src)
+                catalog.remove(user_email, src)
+                _sources_for.clear()
                 st.rerun()
+        if len(sources) > _MAX_LISTED:
+            st.caption(f"…and {len(sources) - _MAX_LISTED:,} more.")
+        if sources:
+            with st.popover("🧹 Remove all documents", use_container_width=True):
+                st.caption(
+                    "Deletes your entire index. Files on your drives are "
+                    "not touched."
+                )
+                if st.button(
+                    "Yes, remove everything",
+                    type="primary",
+                    key="wipe_all_docs",
+                    use_container_width=True,
+                ):
+                    from rag import catalog, vectorstore
+
+                    vectorstore.reset_user(user_email)
+                    catalog.delete_all(user_email)
+                    _sources_for.clear()
+                    st.rerun()
 
 
 def _index_uploads(user_email: str, uploads) -> None:
@@ -397,6 +527,8 @@ def _index_uploads(user_email: str, uploads) -> None:
     isn't really a PDF, and writes to a sanitized, hash-namespaced path so a
     crafted file name can't escape the upload directory.
     """
+    from rag import catalog, pipeline
+
     config.ensure_dirs()
 
     if len(uploads) > security.MAX_FILES_PER_UPLOAD:
@@ -406,6 +538,8 @@ def _index_uploads(user_email: str, uploads) -> None:
         )
         uploads = uploads[: security.MAX_FILES_PER_UPLOAD]
 
+    existing = set(_sources_for(user_email))  # also seeds the catalog if needed
+    cat = catalog.load(user_email) or {}
     progress = st.progress(0.0, text="Starting…")
     total = len(uploads)
     for i, uploaded in enumerate(uploads, start=1):
@@ -423,6 +557,16 @@ def _index_uploads(user_email: str, uploads) -> None:
             st.error(f"{display_name}: doesn't look like a real PDF — skipped.")
             progress.progress(i / total)
             continue
+        if (
+            display_name not in existing
+            and len(existing) >= security.MAX_DOCS_PER_USER
+        ):
+            st.error(
+                f"{display_name}: document limit reached "
+                f"({security.MAX_DOCS_PER_USER} per account) — skipped."
+            )
+            progress.progress(i / total)
+            continue
 
         dest = config.UPLOAD_DIR / security.storage_name(user_email, display_name)
         progress.progress((i - 0.5) / total, text=f"Indexing {display_name}…")
@@ -435,6 +579,14 @@ def _index_uploads(user_email: str, uploads) -> None:
                     "scanned image. (OCR isn't enabled yet.)"
                 )
             else:
+                existing.add(display_name)
+                cat[display_name] = {
+                    "origin": "upload",
+                    "size": len(data),
+                    "mtime": 0,
+                    "pages": result.pages,
+                    "chunks": result.chunks,
+                }
                 st.toast(
                     f"Indexed {result.source}: {result.pages} pages, "
                     f"{result.chunks} chunks",
@@ -442,10 +594,122 @@ def _index_uploads(user_email: str, uploads) -> None:
                 )
         except Exception as exc:  # surface, don't crash the app
             st.error(f"Failed to index {display_name}: {exc}")
+        finally:
+            # The chunked text now lives in the vector store; keeping the raw
+            # PDF around would only grow the disk (it is never read again).
+            dest.unlink(missing_ok=True)
         progress.progress(i / total, text=f"Done {i}/{total}")
+    catalog.save(user_email, cat)
+    _sources_for.clear()
     time.sleep(0.4)
     progress.empty()
     st.rerun()
+
+
+def _drive_scan_view(user_email: str, root: str) -> None:
+    """Discover and index every PDF on ``root``, with live progress.
+
+    Built for terabyte-scale drives: files are read in place (never copied),
+    and progress is checkpointed to the catalog every few files — so stopping
+    midway is safe, and a re-scan skips every file that is already indexed
+    and unchanged (same size + mtime), only touching what's new or modified.
+    """
+    from rag import catalog, drive_scan, pipeline
+
+    st.markdown(f"### 🔍 Scanning Drive {root}")
+    st.caption(
+        "You can stop anytime — scanning again later resumes where it left "
+        "off, and only new or changed PDFs are re-indexed."
+    )
+
+    # --- Phase 1: discover every PDF on the drive ---
+    found_ph = st.empty()
+    stats: dict = {}
+    pdfs: list = []
+    last_update = 0.0
+    with st.spinner(f"Scanning all PDF files from Drive {root} — please wait…"):
+        for path in drive_scan.iter_pdfs(root, stats):
+            pdfs.append(path)
+            now = time.time()
+            if now - last_update > 0.3:  # throttle UI updates
+                found_ph.info(
+                    f"Scanning **{root}** … {len(pdfs):,} PDFs found "
+                    f"({stats.get('dirs', 0):,} folders searched)"
+                )
+                last_update = now
+    found_ph.success(
+        f"Scan complete: found {len(pdfs):,} PDF file(s) on {root} "
+        f"({stats.get('dirs', 0):,} folders searched)."
+    )
+    if not pdfs:
+        st.info("No PDF files were found on this drive.")
+        return
+
+    # --- Phase 2: index only what's new or changed ---
+    _sources_for(user_email)  # seeds the catalog for pre-catalog accounts
+    cat = catalog.load(user_email) or {}
+    max_bytes = security.MAX_DRIVE_FILE_MB * 1024 * 1024
+    progress = st.progress(0.0, text="Preparing to index…")
+    new = skipped = no_text = too_big = failed = 0
+    dirty = 0
+    last_update = 0.0
+    for i, path in enumerate(pdfs, start=1):
+        source = drive_scan.source_name_for(root, path)
+        try:
+            fstat = path.stat()
+        except OSError:
+            failed += 1
+        else:
+            rec = cat.get(source)
+            if (
+                rec
+                and rec.get("size") == fstat.st_size
+                and rec.get("mtime") == int(fstat.st_mtime)
+            ):
+                skipped += 1
+            elif fstat.st_size > max_bytes:
+                too_big += 1
+            else:
+                try:
+                    result = pipeline.ingest_pdf(user_email, path, source_name=source)
+                    # Zero-chunk files are recorded too, so re-scans skip them.
+                    cat[source] = {
+                        "origin": "drive",
+                        "path": drive_scan.strip_extended(path),
+                        "size": fstat.st_size,
+                        "mtime": int(fstat.st_mtime),
+                        "pages": result.pages,
+                        "chunks": result.chunks,
+                    }
+                    if result.chunks == 0:
+                        no_text += 1
+                    else:
+                        new += 1
+                    dirty += 1
+                    if dirty % 25 == 0:
+                        catalog.save(user_email, cat)  # checkpoint for resume
+                except Exception:
+                    failed += 1
+        now = time.time()
+        if now - last_update > 0.25 or i == len(pdfs):  # throttle UI updates
+            progress.progress(
+                i / len(pdfs), text=f"Indexing {i:,}/{len(pdfs):,} — {path.name}"
+            )
+            last_update = now
+    catalog.save(user_email, cat)
+    _sources_for.clear()
+
+    st.success(
+        "All PDF files have been scanned successfully. "
+        "You can now ask any question related to the documents."
+    )
+    st.caption(
+        f"Newly indexed: {new:,} · already up to date: {skipped:,} · "
+        f"no extractable text: {no_text:,} · larger than "
+        f"{security.MAX_DRIVE_FILE_MB} MB: {too_big:,} · failed: {failed:,}"
+    )
+    if st.button("💬 Start asking questions", type="primary"):
+        st.rerun()
 
 
 def _navbar(user_email: str) -> None:
@@ -465,6 +729,7 @@ def _navbar(user_email: str) -> None:
             if st.button("Sign out", key="signout_top", use_container_width=True):
                 st.session_state.user_email = None
                 st.session_state.messages = []
+                st.session_state.upload_mode = None
                 st.rerun()
     st.markdown('<hr class="nav-divider">', unsafe_allow_html=True)
 
@@ -487,20 +752,15 @@ def chat_view(user_email: str) -> None:
             if msg.get("sources"):
                 _render_sources(msg["sources"])
 
-    # ``st.chat_input`` renders an anonymous textarea in this Streamlit
-    # version. A normal form control has stable id/name metadata for browser
-    # autofill and accessibility audits.
-    with st.form("question_form", clear_on_submit=True):
-        question = st.text_area(
-            "Ask a question about your PDFs",
-            placeholder="Ask a question about your PDFs…",
-            key="question_input",
-            label_visibility="collapsed",
-            height=76,
-        )
-        submitted = st.form_submit_button("Send", use_container_width=True)
+    # ``st.chat_input`` stays pinned to the bottom of the viewport (like
+    # ChatGPT/Claude) while the conversation scrolls above it.
+    question = st.chat_input(
+        "Ask a question about your PDFs…",
+        key="question_input",
+        max_chars=security.MAX_QUESTION_CHARS,
+    )
 
-    if submitted and question:
+    if question and question.strip():
         question = question.strip()[: security.MAX_QUESTION_CHARS]
         if security.rate_limited(st.session_state.ask_times):
             st.warning(
@@ -508,16 +768,18 @@ def chat_view(user_email: str) -> None:
                 f"(limit: {security.RATE_LIMIT_MAX} per "
                 f"{security.RATE_LIMIT_WINDOW_S}s)."
             )
-        elif question:
+        else:
             _handle_question(user_email, question)
 
 def _handle_question(user_email: str, question: str) -> None:
+    from rag import pipeline
+
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        if not vectorstore.list_sources(user_email):
+        if not _sources_for(user_email):
             text = "You haven't indexed any PDFs yet. Upload some from the sidebar first."
             st.markdown(text)
             st.session_state.messages.append({"role": "assistant", "content": text})
@@ -552,12 +814,18 @@ def _render_sources(sources: list) -> None:
 
 def main() -> None:
     _init_state()
+    _start_backend_warmup()
     inject_styles()
     if not st.session_state.user_email:
         login_view()
         return
     user_email = st.session_state.user_email
     sidebar(user_email)
+    scan_root = st.session_state.pop("drive_scan_root", None)
+    if scan_root:
+        _navbar(user_email)
+        _drive_scan_view(user_email, scan_root)
+        return
     chat_view(user_email)
 
 
