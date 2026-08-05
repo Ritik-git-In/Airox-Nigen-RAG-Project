@@ -30,8 +30,11 @@ def ingest_pdf(
     """Read, chunk, embed, and store one PDF for a user."""
     pages = load_pdf(path, source_name=source_name)
     chunks = chunk_pages(pages, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
-    stored = vectorstore.add_chunks(user_email, chunks)
     name = source_name or Path(path).name
+    # Re-uploading a document should refresh its index rather than conflict
+    # with its stable chunk IDs or leave stale chunks behind.
+    vectorstore.delete_source(user_email, name)
+    stored = vectorstore.add_chunks(user_email, chunks)
     return IngestResult(source=name, pages=len(pages), chunks=stored)
 
 

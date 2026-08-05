@@ -28,6 +28,11 @@ _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 _FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._\- ]")
 
 
+def _sanitize_path_component(value: str) -> str:
+    """Make one file-path component safe without changing its extension."""
+    return _FILENAME_UNSAFE.sub("_", value).strip().strip(".")[:120]
+
+
 def is_valid_email(email: str) -> bool:
     """True only for a normal, safe email address (no HTML-dangerous chars)."""
     email = (email or "").strip()
@@ -45,14 +50,32 @@ def sanitize_filename(name: str) -> str:
     Defeats path-traversal (``../../etc``) and odd characters, and guarantees a
     ``.pdf`` extension for display.
     """
-    base = Path(name or "").name  # drops any directory / traversal parts
-    base = _FILENAME_UNSAFE.sub("_", base).strip().strip(".")
-    base = base[:120]
+    base = _sanitize_path_component(Path(name or "").name)  # drops traversal
     if not base:
         base = "document"
     if not base.lower().endswith(".pdf"):
         base += ".pdf"
     return base
+
+
+def sanitize_source_name(name: str) -> str:
+    """Return a safe, readable relative path for citations.
+
+    Directory uploads may provide names such as ``reports/2025/Q4.pdf``.
+    Retaining those folder names makes otherwise-identical PDFs distinguishable
+    in search results and source citations, while sanitising every component
+    prevents a supplied path from escaping the application's storage area.
+    """
+    raw_parts = str(name or "").replace("\\", "/").split("/")
+    parts = [
+        _sanitize_path_component(part)
+        for part in raw_parts
+        if part not in {"", ".", ".."} and _sanitize_path_component(part)
+    ]
+    if not parts:
+        return "document.pdf"
+    parts[-1] = sanitize_filename(parts[-1])
+    return "/".join(parts)
 
 
 def looks_like_pdf(data: bytes) -> bool:
@@ -66,8 +89,12 @@ def storage_name(user_email: str, filename: str) -> str:
     The user part is hashed (not the raw email) so the path can't be influenced
     by anything the user types, and it stays inside the upload directory.
     """
-    digest = hashlib.sha1(user_email.lower().encode()).hexdigest()[:10]
-    return f"{digest}__{sanitize_filename(filename)}"
+    user_digest = hashlib.sha1(user_email.lower().encode()).hexdigest()[:10]
+    source = sanitize_source_name(filename)
+    file_digest = hashlib.sha1(source.encode()).hexdigest()[:10]
+    # Store only a safe basename on disk. The source path itself stays in
+    # Chroma metadata, where it is used for citations.
+    return f"{user_digest}__{file_digest}__{sanitize_filename(Path(source).name)}"
 
 
 def rate_limited(history: list[float], now: float | None = None) -> bool:

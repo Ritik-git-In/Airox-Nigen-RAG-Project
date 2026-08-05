@@ -16,7 +16,6 @@ os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 import time
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from rag import auth, config, pipeline, security, vectorstore
 
@@ -49,12 +48,9 @@ def inject_styles() -> None:
         /* Keep the header (it holds the sidebar toggle) but make it blend in. */
         [data-testid="stHeader"] { background: transparent; }
 
-        /* Soft gradient backdrop */
+        /* True black backdrop */
         .stApp {
-            background:
-                radial-gradient(1100px 520px at 12% -8%, #1d2748 0%, rgba(13,17,28,0) 55%),
-                radial-gradient(900px 500px at 100% 0%, #21183f 0%, rgba(13,17,28,0) 50%),
-                #0B0E16;
+            background: #000000;
         }
 
         /* Pull everything up: Streamlit's default top padding is very large */
@@ -146,7 +142,7 @@ def inject_styles() -> None:
 
         /* Sidebar */
         [data-testid="stSidebar"] {
-            background: rgba(12,15,24,0.92);
+            background: #000000;
             border-right: 1px solid rgba(255,255,255,0.06);
         }
         [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: #cdd3e6; }
@@ -251,35 +247,6 @@ def inject_styles() -> None:
     )
 
 
-def auto_scroll(nonce: int) -> None:
-    """Scroll the chat area to the bottom (like ChatGPT) after each render.
-
-    ``nonce`` (the message count) is embedded so the component re-runs its
-    script whenever a new message is added.
-    """
-    components.html(
-        f"""
-        <script>
-        // nonce={nonce}
-        const targets = [
-            'section.stMain', '[data-testid="stMain"]', '.main',
-            '[data-testid="stAppViewContainer"]'
-        ];
-        function toBottom() {{
-            const doc = window.parent.document;
-            targets.forEach(sel => {{
-                doc.querySelectorAll(sel).forEach(el => {{
-                    el.scrollTo({{ top: el.scrollHeight, behavior: 'smooth' }});
-                }});
-            }});
-        }}
-        [0, 90, 220, 450].forEach(t => setTimeout(toBottom, t));
-        </script>
-        """,
-        height=0,
-    )
-
-
 # --------------------------------------------------------------------------- #
 # State                                                                        #
 # --------------------------------------------------------------------------- #
@@ -287,6 +254,7 @@ def _init_state() -> None:
     st.session_state.setdefault("user_email", None)
     st.session_state.setdefault("messages", [])  # list[dict(role, content, sources)]
     st.session_state.setdefault("ask_times", [])  # timestamps for rate limiting
+    st.session_state.setdefault("upload_mode", None)  # "pdf" | "folder"
 
 
 # --------------------------------------------------------------------------- #
@@ -317,8 +285,12 @@ def login_view() -> None:
 
         with sign_in_tab:
             with st.form("signin"):
-                email = st.text_input("Email", placeholder="you@example.com")
-                pw = st.text_input("Password", type="password")
+                email = st.text_input(
+                    "Email", placeholder="you@example.com", autocomplete="email"
+                )
+                pw = st.text_input(
+                    "Password", type="password", autocomplete="current-password"
+                )
                 ok = st.form_submit_button("Sign in →", use_container_width=True)
             if ok:
                 if not security.is_valid_email(email):
@@ -332,13 +304,24 @@ def login_view() -> None:
 
         with sign_up_tab:
             with st.form("signup"):
-                email2 = st.text_input("Email", placeholder="you@example.com", key="su_email")
+                email2 = st.text_input(
+                    "Email",
+                    placeholder="you@example.com",
+                    key="su_email",
+                    autocomplete="email",
+                )
                 pw1 = st.text_input(
                     f"Password (min {auth.MIN_PASSWORD_LEN} characters)",
                     type="password",
                     key="su_pw1",
+                    autocomplete="new-password",
                 )
-                pw2 = st.text_input("Confirm password", type="password", key="su_pw2")
+                pw2 = st.text_input(
+                    "Confirm password",
+                    type="password",
+                    key="su_pw2",
+                    autocomplete="new-password",
+                )
                 ok2 = st.form_submit_button("Create account", use_container_width=True)
             if ok2:
                 if pw1 != pw2:
@@ -355,14 +338,42 @@ def login_view() -> None:
 
 
 def sidebar(user_email: str) -> None:
-    """Upload area + the user's indexed documents."""
+    """Directory upload area + the user's indexed documents."""
     with st.sidebar:
-        st.subheader("Upload PDFs")
-        uploads = st.file_uploader(
-            "Drop your PDFs here", type=["pdf"], accept_multiple_files=True
-        )
+        st.subheader("Add documents")
+        # Streamlit's native uploader cannot change between a file and a
+        # directory picker after its plus button has been clicked. Put that
+        # decision in a small plus menu first, then open the right picker.
+        with st.popover("＋ Add", use_container_width=True):
+            st.caption("Choose what you want to add")
+            if st.button("Upload PDF", use_container_width=True, key="choose_pdf_upload"):
+                st.session_state.upload_mode = "pdf"
+                st.rerun()
+            if st.button("Upload Folder", use_container_width=True, key="choose_folder_upload"):
+                st.session_state.upload_mode = "folder"
+                st.rerun()
+
+        uploads = []
+        if st.session_state.upload_mode == "pdf":
+            st.caption("Upload one PDF")
+            upload = st.file_uploader(
+                "Choose a PDF", type=["pdf"], key="single_pdf_upload"
+            )
+            uploads = [upload] if upload else []
+        elif st.session_state.upload_mode == "folder":
+            st.caption("Upload a folder — PDFs in subfolders are included")
+            uploads = st.file_uploader(
+                "Choose a folder containing PDFs",
+                type=["pdf"],
+                accept_multiple_files="directory",
+                key="folder_pdf_upload",
+                help="All PDFs in the selected folder and its subfolders are included.",
+            )
+        else:
+            st.caption("Use + Add to upload a PDF or a folder of PDFs.")
+
         if uploads and st.button(
-            "Index uploaded PDFs", type="primary", use_container_width=True
+            "Index selected PDFs", type="primary", use_container_width=True
         ):
             _index_uploads(user_email, uploads)
 
@@ -380,7 +391,7 @@ def sidebar(user_email: str) -> None:
 
 
 def _index_uploads(user_email: str, uploads) -> None:
-    """Validate, save, and index each uploaded PDF.
+    """Validate, save, and index PDFs selected through a folder upload.
 
     Security: caps the batch size, rejects oversized files and anything that
     isn't really a PDF, and writes to a sanitized, hash-namespaced path so a
@@ -398,7 +409,9 @@ def _index_uploads(user_email: str, uploads) -> None:
     progress = st.progress(0.0, text="Starting…")
     total = len(uploads)
     for i, uploaded in enumerate(uploads, start=1):
-        display_name = security.sanitize_filename(uploaded.name)
+        # Streamlit's directory uploader includes files from nested folders.
+        # Keep their safe relative names so citations identify the right PDF.
+        display_name = security.sanitize_source_name(uploaded.name)
         data = bytes(uploaded.getbuffer())
 
         # --- validation gates ---
@@ -474,8 +487,20 @@ def chat_view(user_email: str) -> None:
             if msg.get("sources"):
                 _render_sources(msg["sources"])
 
-    question = st.chat_input("Ask a question about your PDFs…")
-    if question:
+    # ``st.chat_input`` renders an anonymous textarea in this Streamlit
+    # version. A normal form control has stable id/name metadata for browser
+    # autofill and accessibility audits.
+    with st.form("question_form", clear_on_submit=True):
+        question = st.text_area(
+            "Ask a question about your PDFs",
+            placeholder="Ask a question about your PDFs…",
+            key="question_input",
+            label_visibility="collapsed",
+            height=76,
+        )
+        submitted = st.form_submit_button("Send", use_container_width=True)
+
+    if submitted and question:
         question = question.strip()[: security.MAX_QUESTION_CHARS]
         if security.rate_limited(st.session_state.ask_times):
             st.warning(
@@ -485,10 +510,6 @@ def chat_view(user_email: str) -> None:
             )
         elif question:
             _handle_question(user_email, question)
-
-    # Keep the latest message in view, ChatGPT-style.
-    auto_scroll(len(st.session_state.messages))
-
 
 def _handle_question(user_email: str, question: str) -> None:
     st.session_state.messages.append({"role": "user", "content": question})
