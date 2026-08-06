@@ -419,6 +419,125 @@ def login_view() -> None:
                         st.error(msg)
 
 
+def inject_header_toggle() -> None:
+    """Inject a small top-left toggle button that opens/closes the sidebar.
+
+    The script tries to hide Streamlit's default header toggle (if present),
+    inserts a compact hamburger in the top-left, and proxies clicks to the
+    native sidebar toggle. Clicking outside the sidebar will close it.
+    """
+    components.html(
+        """
+        <style>
+        #custom-sidebar-toggle {
+            position: fixed;
+            top: 10px;
+            left: 12px;
+            z-index: 100000;
+            width: 40px; height: 40px;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.03);
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.5);
+            transition: background .12s ease, transform .12s ease;
+        }
+        #custom-sidebar-toggle:hover { transform: translateY(-1px); background: rgba(255,255,255,0.04); }
+        #custom-sidebar-toggle .bars { width: 18px; height: 12px; position: relative; }
+        #custom-sidebar-toggle .bars span { position: absolute; left: 0; right: 0; height: 2px; background: #cdd3e6; display: block; border-radius: 2px; }
+        #custom-sidebar-toggle .bars span:nth-child(1) { top: 0; }
+        #custom-sidebar-toggle .bars span:nth-child(2) { top: 5px; }
+        #custom-sidebar-toggle .bars span:nth-child(3) { top: 10px; }
+        </style>
+        <div id="custom-sidebar-toggle" title="Toggle menu">
+          <div class="bars"><span></span><span></span><span></span></div>
+        </div>
+        <script>
+        (function () {
+            const btn = document.getElementById('custom-sidebar-toggle');
+            // Helper to find the native toggle button Streamlit may create.
+            function findNativeToggle() {
+                // common candidates
+                const selectors = [
+                    '[data-testid="stSidebarToggle"]',
+                    '[title="Toggle sidebar"]',
+                    '[data-testid="stHeader"] button',
+                    'button[aria-label="Main menu"]',
+                ];
+                for (const s of selectors) {
+                    const el = document.querySelector(s);
+                    if (el) return el;
+                }
+                // fallback: first header button that looks small (chevrons)
+                const header = document.querySelector('[data-testid="stHeader"]');
+                if (header) {
+                    const btns = header.querySelectorAll('button');
+                    for (const b of btns) {
+                        if (/»|›|≡|☰|menu|toggle/i.test(b.innerText || b.title || '')) {
+                            return b;
+                        }
+                    }
+                }
+                return null;
+            }
+
+            // hide the default chevron toggle (if present)
+            setTimeout(function () {
+                try {
+                    const native = findNativeToggle();
+                    if (native) native.style.display = 'none';
+                } catch (e) {}
+            }, 300);
+
+            let nativeToggle = null;
+            function ensureNative() { nativeToggle = nativeToggle || findNativeToggle(); return nativeToggle; }
+
+            // toggle by proxying clicks to the native button when possible
+            btn.addEventListener('click', function (ev) {
+                ev.stopPropagation(); ev.preventDefault();
+                const n = ensureNative();
+                if (n) { n.click(); window.__custom_menu_open = !window.__custom_menu_open; return; }
+                // fallback: toggle CSS class on body
+                document.body.classList.toggle('custom-sidebar-open');
+                window.__custom_menu_open = document.body.classList.contains('custom-sidebar-open');
+            });
+
+            // clicking outside the sidebar should close it
+            document.addEventListener('click', function (ev) {
+                const sidebar = document.querySelector('[data-testid="stSidebar"]');
+                if (!sidebar) return;
+                const isInsideSidebar = sidebar.contains(ev.target);
+                const isToggle = btn.contains(ev.target);
+                if (!isInsideSidebar && !isToggle) {
+                    const n = ensureNative();
+                    if ((window.__custom_menu_open || sidebar.offsetWidth > 0) && n) {
+                        // ensure we only try to close when open
+                        try { n.click(); } catch (e) {}
+                        window.__custom_menu_open = false;
+                    }
+                    // remove our fallback class
+                    if (document.body.classList.contains('custom-sidebar-open')) {
+                        document.body.classList.remove('custom-sidebar-open');
+                    }
+                }
+            }, true);
+
+            // make sidebar dismissible on Escape too (nice UX)
+            document.addEventListener('keydown', function (ev) {
+                if (ev.key === 'Escape') {
+                    const n = ensureNative();
+                    if (n && (window.__custom_menu_open || document.querySelector('[data-testid="stSidebar"]').offsetWidth>0)) {
+                        try { n.click(); } catch (e) {}
+                        window.__custom_menu_open = false;
+                    }
+                }
+            });
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def sidebar(user_email: str) -> None:
     """Directory upload area + the user's indexed documents."""
     with st.sidebar:
@@ -856,6 +975,7 @@ def main() -> None:
     _init_state()
     _start_backend_warmup()
     inject_styles()
+    inject_header_toggle()
     if not st.session_state.user_email:
         login_view()
         return
