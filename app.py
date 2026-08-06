@@ -50,18 +50,38 @@ def inject_styles() -> None:
         [data-testid="stStatusWidget"],
         [data-testid="stDeployButton"],
         [data-testid="stToolbarActions"] { display: none !important; }
-        /* Keep the header (it holds the sidebar toggle) but make it blend in. */
+        /* Visual header hiding and click-through. */
+        header.stAppHeader,
+        .stAppToolbar,
         [data-testid="stHeader"] {
-            background: #050505 !important;
-            position: fixed !important; /* use fixed so it remains visible while scrolling */
-            top: 0; left: 0; right: 0;
-            height: 64px !important;
-            z-index: 99999 !important;
-            box-shadow: 0 6px 24px rgba(0,0,0,0.6) !important;
-            backdrop-filter: blur(6px) !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            pointer-events: none !important;
+        }
+        [data-testid="stHeader"] > div, [data-testid="stHeader"] * {
+            width: 100% !important;
+            pointer-events: none !important;
+        }
+        [data-testid="stExpandSidebarButton"] {
+            position: fixed !important;
+            left: 10px !important;
+            top: 10px !important;
+            z-index: 999999 !important;
+            width: 40px !important;
+            height: 40px !important;
+            pointer-events: auto !important;
             display: flex !important;
             align-items: center !important;
-            padding: 0 18px !important;
+            justify-content: center !important;
+            background-color: rgba(255,255,255,0.08) !important;
+            border: 1px solid rgba(255,255,255,0.14) !important;
+            border-radius: 12px !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.35) !important;
+        }
+        [data-testid="stExpandSidebarButton"] span {
+            width: auto !important;
         }
 
         /* Tighter dark backdrop applied to all main containers so footers/panels match */
@@ -86,14 +106,40 @@ def inject_styles() -> None:
 
         /* Pull everything up: Streamlit's default top padding is very large */
         [data-testid="stMainBlockContainer"], .block-container {
-            padding-top: 5.5rem !important; /* account for fixed header height */
+            padding-top: 2.4rem !important;
             padding-bottom: 6.0rem !important; /* more bottom space so inputs sit lower */
-            min-height: calc(100vh - 120px) !important; /* keep the main area tall so the question box appears lower */
+            min-height: calc(100vh - 80px) !important; /* keep the main area tall so the question box appears lower */
         }
 
         /* Ensure header children stretch full width and don't get clipped */
         [data-testid="stHeader"] > div, [data-testid="stHeader"] * {
             width: 100% !important;
+        }
+
+        /* The application navbar is separate from Streamlit's header. Keep
+           it fixed while the conversation and document views scroll. */
+        .st-key-app-navbar {
+            position: fixed !important;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 99998;
+            width: 100%;
+            margin: 0 !important;
+            padding: 10px clamp(1.25rem, 5.2vw, 6.25rem) 8px !important;
+            background: #050505;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.38);
+        }
+        /* A fixed element does not occupy document space. This prevents the
+           first chat message from being hidden beneath the navbar. */
+        .app-navbar-spacer { height: 76px; }
+
+        @media (max-width: 640px) {
+            .st-key-app-navbar {
+                padding-left: 4.5rem !important;
+                padding-right: 1rem !important;
+            }
+            .app-navbar-spacer { height: 82px; }
         }
 
         /* Header band */
@@ -422,115 +468,190 @@ def login_view() -> None:
 def inject_header_toggle() -> None:
     """Inject a small top-left toggle button that opens/closes the sidebar.
 
-    The script tries to hide Streamlit's default header toggle (if present),
-    inserts a compact hamburger in the top-left, and proxies clicks to the
-    native sidebar toggle. Clicking outside the sidebar will close it.
+    The script creates a button in the page root and toggles the sidebar
+    directly using the page DOM, then closes it when clicking outside.
     """
     components.html(
         """
-        <style>
-        #custom-sidebar-toggle {
-            position: fixed;
-            top: 10px;
-            left: 12px;
-            z-index: 100000;
-            width: 40px; height: 40px;
-            border-radius: 8px;
-            background: rgba(255,255,255,0.03);
-            display: flex; align-items: center; justify-content: center;
-            cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.5);
-            transition: background .12s ease, transform .12s ease;
-        }
-        #custom-sidebar-toggle:hover { transform: translateY(-1px); background: rgba(255,255,255,0.04); }
-        #custom-sidebar-toggle .bars { width: 18px; height: 12px; position: relative; }
-        #custom-sidebar-toggle .bars span { position: absolute; left: 0; right: 0; height: 2px; background: #cdd3e6; display: block; border-radius: 2px; }
-        #custom-sidebar-toggle .bars span:nth-child(1) { top: 0; }
-        #custom-sidebar-toggle .bars span:nth-child(2) { top: 5px; }
-        #custom-sidebar-toggle .bars span:nth-child(3) { top: 10px; }
-        </style>
-        <div id="custom-sidebar-toggle" title="Toggle menu">
-          <div class="bars"><span></span><span></span><span></span></div>
-        </div>
         <script>
         (function () {
-            const btn = document.getElementById('custom-sidebar-toggle');
-            // Helper to find the native toggle button Streamlit may create.
-            function findNativeToggle() {
-                // common candidates
-                const selectors = [
-                    '[data-testid="stSidebarToggle"]',
-                    '[title="Toggle sidebar"]',
-                    '[data-testid="stHeader"] button',
-                    'button[aria-label="Main menu"]',
-                ];
-                for (const s of selectors) {
-                    const el = document.querySelector(s);
-                    if (el) return el;
+            const topDoc = window.top.document;
+            if (!topDoc || !topDoc.body) return;
+
+            const styleId = 'custom-sidebar-toggle-style';
+            if (!topDoc.getElementById(styleId)) {
+                const style = topDoc.createElement('style');
+                style.id = styleId;
+                style.textContent = `
+                #custom-sidebar-toggle {
+                    position: fixed !important;
+                    top: 10px !important;
+                    left: 10px !important;
+                    z-index: 999999 !important;
+                    width: 46px !important;
+                    height: 46px !important;
+                    border-radius: 16px !important;
+                    background: rgba(255,255,255,0.12) !important;
+                    border: 1px solid rgba(255,255,255,0.16) !important;
+                    display: grid !important;
+                    place-items: center !important;
+                    cursor: pointer !important;
+                    box-shadow: 0 20px 50px rgba(0,0,0,0.45) !important;
+                    transition: transform .16s ease, background .16s ease !important;
+                    pointer-events: auto !important;
                 }
-                // fallback: first header button that looks small (chevrons)
-                const header = document.querySelector('[data-testid="stHeader"]');
-                if (header) {
-                    const btns = header.querySelectorAll('button');
-                    for (const b of btns) {
-                        if (/»|›|≡|☰|menu|toggle/i.test(b.innerText || b.title || '')) {
-                            return b;
+                #custom-sidebar-toggle:hover {
+                    transform: translateY(-1px) !important;
+                    background: rgba(255,255,255,0.20) !important;
+                }
+                #custom-sidebar-toggle span {
+                    font-size: 20px !important;
+                    color: #eef2ff !important;
+                    line-height: 1 !important;
+                }
+                [data-testid="stExpandSidebarButton"] {
+                    display: none !important;
+                }
+                [data-testid="stSidebar"],
+                .stSidebar.st-emotion-cache-l7lcii {
+                    transform: translateX(var(--custom-sidebar-x, -300px)) !important;
+                    min-width: var(--custom-sidebar-min-width, 0px) !important;
+                    max-width: var(--custom-sidebar-max-width, 0px) !important;
+                    width: var(--custom-sidebar-width, 0px) !important;
+                    overflow: var(--custom-sidebar-overflow, hidden) !important;
+                    visibility: var(--custom-sidebar-visibility, hidden) !important;
+                    opacity: var(--custom-sidebar-opacity, 0) !important;
+                    transition: transform 320ms ease !important, min-width 320ms ease !important, max-width 320ms ease !important, width 320ms ease !important, opacity 320ms ease !important;
+                }
+                [data-testid="stSidebar"][aria-expanded="true"],
+                .stSidebar.st-emotion-cache-l7lcii[aria-expanded="true"] {
+                    --custom-sidebar-x: 0px !important;
+                    --custom-sidebar-min-width: 300px !important;
+                    --custom-sidebar-max-width: 300px !important;
+                    --custom-sidebar-width: 300px !important;
+                    --custom-sidebar-overflow: visible !important;
+                    --custom-sidebar-visibility: visible !important;
+                    --custom-sidebar-opacity: 1 !important;
+                }
+                [data-testid="stSidebar"][aria-expanded="false"],
+                .stSidebar.st-emotion-cache-l7lcii[aria-expanded="false"] {
+                    --custom-sidebar-x: -300px !important;
+                    --custom-sidebar-min-width: 0px !important;
+                    --custom-sidebar-max-width: 0px !important;
+                    --custom-sidebar-width: 0px !important;
+                    --custom-sidebar-overflow: hidden !important;
+                    --custom-sidebar-visibility: hidden !important;
+                    --custom-sidebar-opacity: 0 !important;
+                }
+                `;
+                topDoc.head.appendChild(style);
+            }
+
+            function getSidebar() {
+                const docs = [topDoc].concat(
+                    Array.from(topDoc.querySelectorAll('iframe')).map((frame) => {
+                        try {
+                            return frame.contentDocument || frame.contentWindow?.document || null;
+                        } catch (err) {
+                            return null;
                         }
-                    }
+                    }).filter(Boolean)
+                );
+                for (const doc of docs) {
+                    const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+                    if (sidebar) return {sidebar, doc};
                 }
                 return null;
             }
 
-            // hide the default chevron toggle (if present)
-            setTimeout(function () {
-                try {
-                    const native = findNativeToggle();
-                    if (native) native.style.display = 'none';
-                } catch (e) {}
-            }, 300);
+            function isSidebarOpen(found) {
+                if (!found) return false;
+                const cs = found.doc.defaultView.getComputedStyle(found.sidebar);
+                const rect = found.sidebar.getBoundingClientRect();
+                return rect.left >= 0 && cs.visibility !== 'hidden' && cs.opacity !== '0';
+            }
 
-            let nativeToggle = null;
-            function ensureNative() { nativeToggle = nativeToggle || findNativeToggle(); return nativeToggle; }
+            function setSidebarOpen(open) {
+                const found = getSidebar();
+                if (!found) return;
+                const {sidebar} = found;
+                if (open) {
+                    sidebar.style.setProperty('--custom-sidebar-x', '0px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-min-width', '300px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-max-width', '300px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-width', '300px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-overflow', 'visible', 'important');
+                    sidebar.style.removeProperty('visibility');
+                    sidebar.style.removeProperty('opacity');
+                    sidebar.setAttribute('aria-expanded', 'true');
+                } else {
+                    sidebar.style.setProperty('--custom-sidebar-x', '-300px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-min-width', '0px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-max-width', '0px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-width', '0px', 'important');
+                    sidebar.style.setProperty('--custom-sidebar-overflow', 'hidden', 'important');
+                    sidebar.setAttribute('aria-expanded', 'false');
+                }
+            }
 
-            // toggle by proxying clicks to the native button when possible
-            btn.addEventListener('click', function (ev) {
-                ev.stopPropagation(); ev.preventDefault();
-                const n = ensureNative();
-                if (n) { n.click(); window.__custom_menu_open = !window.__custom_menu_open; return; }
-                // fallback: toggle CSS class on body
-                document.body.classList.toggle('custom-sidebar-open');
-                window.__custom_menu_open = document.body.classList.contains('custom-sidebar-open');
-            });
+            function toggleSidebar(ev) {
+                if (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
+                const found = getSidebar();
+                if (!found) return;
+                setSidebarOpen(!isSidebarOpen(found));
+            }
 
-            // clicking outside the sidebar should close it
-            document.addEventListener('click', function (ev) {
-                const sidebar = document.querySelector('[data-testid="stSidebar"]');
-                if (!sidebar) return;
-                const isInsideSidebar = sidebar.contains(ev.target);
-                const isToggle = btn.contains(ev.target);
-                if (!isInsideSidebar && !isToggle) {
-                    const n = ensureNative();
-                    if ((window.__custom_menu_open || sidebar.offsetWidth > 0) && n) {
-                        // ensure we only try to close when open
-                        try { n.click(); } catch (e) {}
-                        window.__custom_menu_open = false;
-                    }
-                    // remove our fallback class
-                    if (document.body.classList.contains('custom-sidebar-open')) {
-                        document.body.classList.remove('custom-sidebar-open');
-                    }
+            let toggleButton = topDoc.getElementById('custom-sidebar-toggle');
+            if (!toggleButton) {
+                toggleButton = topDoc.createElement('button');
+                toggleButton.id = 'custom-sidebar-toggle';
+                toggleButton.type = 'button';
+                toggleButton.title = 'Toggle menu';
+                toggleButton.innerHTML = '<span aria-hidden="true">☰</span>';
+                toggleButton.addEventListener('click', toggleSidebar);
+                topDoc.body.appendChild(toggleButton);
+            } else {
+                const replacement = toggleButton.cloneNode(true);
+                replacement.removeAttribute('onclick');
+                replacement.onclick = null;
+                replacement.addEventListener('click', toggleSidebar);
+                toggleButton.parentNode.replaceChild(replacement, toggleButton);
+                toggleButton = replacement;
+            }
+
+            function hideNativeToggle() {
+                const native = topDoc.querySelector('[data-testid="stExpandSidebarButton"]');
+                if (native) native.style.setProperty('display', 'none', 'important');
+            }
+            hideNativeToggle();
+
+            topDoc.addEventListener('click', function (event) {
+                const found = getSidebar();
+                if (!found) return;
+                if (toggleButton.contains(event.target) || found.sidebar.contains(event.target)) return;
+                if (isSidebarOpen(found)) {
+                    setSidebarOpen(false);
                 }
             }, true);
 
-            // make sidebar dismissible on Escape too (nice UX)
-            document.addEventListener('keydown', function (ev) {
-                if (ev.key === 'Escape') {
-                    const n = ensureNative();
-                    if (n && (window.__custom_menu_open || document.querySelector('[data-testid="stSidebar"]').offsetWidth>0)) {
-                        try { n.click(); } catch (e) {}
-                        window.__custom_menu_open = false;
+            topDoc.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') {
+                    const found = getSidebar();
+                    if (found && isSidebarOpen(found)) {
+                        setSidebarOpen(false);
                     }
                 }
             });
+
+            new MutationObserver(function () {
+                if (!topDoc.getElementById('custom-sidebar-toggle')) {
+                    topDoc.body.appendChild(toggleButton);
+                }
+                hideNativeToggle();
+            }).observe(topDoc.body, { childList: true, subtree: true });
         })();
         </script>
         """,
@@ -872,7 +993,19 @@ def _drive_scan_view(user_email: str, root: str) -> None:
 
 
 def _navbar(user_email: str) -> None:
-    """Compact top navigation bar: brand on the left, user menu on the right."""
+    """Render the navigation as a fixed bar and reserve room beneath it."""
+    # A keyed container gets the stable ``st-key-app-navbar`` CSS class.
+    # It stays visible while the content below it scrolls normally.
+    with st.container(key="app-navbar"):
+        _navbar_content(user_email)
+    st.markdown(
+        '<div class="app-navbar-spacer" aria-hidden="true"></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _navbar_content(user_email: str) -> None:
+    """Contents of the fixed navigation bar."""
     left, right = st.columns([0.74, 0.26], vertical_alignment="center")
     with left:
         st.markdown(
@@ -890,7 +1023,6 @@ def _navbar(user_email: str) -> None:
                 st.session_state.messages = []
                 st.session_state.upload_mode = None
                 st.rerun()
-    st.markdown('<hr class="nav-divider">', unsafe_allow_html=True)
 
 
 def chat_view(user_email: str) -> None:

@@ -31,10 +31,9 @@ def ingest_pdf(
     pages = load_pdf(path, source_name=source_name)
     chunks = chunk_pages(pages, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
     name = source_name or Path(path).name
-    # Re-uploading a document should refresh its index rather than conflict
-    # with its stable chunk IDs or leave stale chunks behind.
-    vectorstore.delete_source(user_email, name)
-    stored = vectorstore.add_chunks(user_email, chunks)
+    # Re-uploading refreshes the source while preserving the prior index if
+    # embedding or storage fails partway through the replacement.
+    stored = vectorstore.replace_source_chunks(user_email, name, chunks)
     return IngestResult(source=name, pages=len(pages), chunks=stored)
 
 

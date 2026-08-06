@@ -66,8 +66,11 @@ def _collection_name(user_email: str) -> str:
     """
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", user_email.lower()).strip("_")
     digest = hashlib.sha1(user_email.lower().encode()).hexdigest()[:8]
-    name = f"u_{slug}_{digest}"
-    return name[:63]
+    # Keep the digest intact. Truncating the final name can cut it off for a
+    # long email address, allowing otherwise different accounts with the same
+    # prefix to resolve to one collection.
+    max_slug_len = 63 - len("u_") - len("_") - len(digest)
+    return f"u_{slug[:max_slug_len]}_{digest}"
 
 
 def _get_collection(user_email: str):
@@ -88,6 +91,11 @@ def add_chunks(user_email: str, chunks: list[Chunk]) -> int:
     if not chunks:
         return 0
     collection = _get_collection(user_email)
+    return _add_chunks_to_collection(collection, chunks)
+
+
+def _add_chunks_to_collection(collection, chunks: list[Chunk]) -> int:
+    """Add chunks to an already selected collection in safe-sized batches."""
     for start in range(0, len(chunks), _ADD_BATCH_SIZE):
         batch = chunks[start : start + _ADD_BATCH_SIZE]
         collection.add(
@@ -100,6 +108,33 @@ def add_chunks(user_email: str, chunks: list[Chunk]) -> int:
             ],
         )
     return len(chunks)
+
+
+def replace_source_chunks(user_email: str, source: str, chunks: list[Chunk]) -> int:
+    """Replace one source without losing its previous index if insertion fails.
+
+    Re-uploads reuse stable chunk IDs.  The old code deleted those IDs before
+    embedding the replacement, so an embedding/database failure left the user
+    with no searchable copy of that document.  Keep a small Chroma snapshot
+    and restore it if adding the replacement cannot complete.
+    """
+    collection = _get_collection(user_email)
+    previous = collection.get(
+        where={"source": source},
+        include=["documents", "embeddings", "metadatas"],
+    )
+    collection.delete(where={"source": source})
+    try:
+        return _add_chunks_to_collection(collection, chunks) if chunks else 0
+    except Exception:
+        if previous["ids"]:
+            collection.add(
+                ids=previous["ids"],
+                documents=previous["documents"],
+                embeddings=previous["embeddings"],
+                metadatas=previous["metadatas"],
+            )
+        raise
 
 
 def query(user_email: str, question: str, top_k: int) -> list[Retrieved]:
