@@ -51,7 +51,14 @@ def inject_styles() -> None:
         [data-testid="stDeployButton"],
         [data-testid="stToolbarActions"] { display: none !important; }
         /* Keep the header (it holds the sidebar toggle) but make it blend in. */
-        [data-testid="stHeader"] { background: transparent; }
+        [data-testid="stHeader"] {
+            background: #050505 !important;
+            position: sticky !important;
+            top: 0; left: 0; right: 0;
+            z-index: 9999 !important;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.6);
+            backdrop-filter: blur(6px);
+        }
 
         /* Tighter dark backdrop applied to all main containers so footers/panels match */
         html, body,
@@ -75,7 +82,7 @@ def inject_styles() -> None:
 
         /* Pull everything up: Streamlit's default top padding is very large */
         [data-testid="stMainBlockContainer"], .block-container {
-            padding-top: 0.8rem !important;
+            padding-top: 4.5rem !important; /* account for sticky header height */
             padding-bottom: 6.0rem !important; /* more bottom space so inputs sit lower */
             min-height: calc(100vh - 120px) !important; /* keep the main area tall so the question box appears lower */
         }
