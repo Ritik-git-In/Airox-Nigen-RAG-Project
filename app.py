@@ -53,14 +53,31 @@ def inject_styles() -> None:
         /* Keep the header (it holds the sidebar toggle) but make it blend in. */
         [data-testid="stHeader"] { background: transparent; }
 
-        /* True black backdrop */
-        .stApp {
-            background: #000000;
+        /* Tighter dark backdrop applied to all main containers so footers/panels match */
+        html, body,
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stMainBlockContainer"],
+        .block-container {
+            background: #050505 !important; /* user requested tighter black */
+            background-image: none !important;
+            min-height: 100vh;
+        }
+
+        /* DevTools-identified container (runtime-generated emotion class).
+           Keep a specific override in case Streamlit inserts its own darker band. */
+        .st-emotion-cache-1p8uksh.e15ve43o3,
+        .stBottom.st-emotion-cache-1p2n2i4.e15ve43o2 {
+            background-color: #050505 !important;
+            background-image: none !important;
         }
 
         /* Pull everything up: Streamlit's default top padding is very large */
         [data-testid="stMainBlockContainer"], .block-container {
             padding-top: 0.8rem !important;
+            padding-bottom: 6.0rem !important; /* more bottom space so inputs sit lower */
+            min-height: calc(100vh - 120px) !important; /* keep the main area tall so the question box appears lower */
         }
 
         /* Header band */
@@ -141,8 +158,15 @@ def inject_styles() -> None:
         [data-testid="stChatInput"] {
             border-radius: 14px;
             border: 1px solid rgba(124,108,246,.45);
-            background: rgba(20,26,40,0.9);
-            box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+            background: rgba(20,26,40,0.95);
+            box-shadow: 0 10px 36px rgba(0,0,0,0.45);
+            margin-top: 40px !important; /* nudge the question box significantly lower within its container */
+            transition: margin-top .18s ease;
+        }
+
+        /* If the question input sits inside a PDF display node, ensure it's pushed further down there too */
+        .stApp [data-testid="stMainBlockContainer"] .stFileUploaderDropzone ~ div [data-testid="stChatInput"] {
+            margin-top: 56px !important;
         }
 
         /* Sidebar */
