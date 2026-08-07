@@ -344,7 +344,6 @@ def inject_styles() -> None:
 def _init_state() -> None:
     st.session_state.setdefault("user_email", None)
     st.session_state.setdefault("messages", [])  # list[dict(role, content, sources)]
-    st.session_state.setdefault("ask_times", [])  # timestamps for rate limiting
     st.session_state.setdefault("upload_mode", None)  # "pdf" | "folder"
 
 
@@ -1048,19 +1047,11 @@ def chat_view(user_email: str) -> None:
     question = st.chat_input(
         "Ask a question about your PDFs…",
         key="question_input",
-        max_chars=security.MAX_QUESTION_CHARS,
     )
 
     if question and question.strip():
-        question = question.strip()[: security.MAX_QUESTION_CHARS]
-        if security.rate_limited(st.session_state.ask_times):
-            st.warning(
-                f"You're sending questions too fast. Please wait a moment "
-                f"(limit: {security.RATE_LIMIT_MAX} per "
-                f"{security.RATE_LIMIT_WINDOW_S}s)."
-            )
-        else:
-            _handle_question(user_email, question)
+        question = question.strip()
+        _handle_question(user_email, question)
 
 def _handle_question(user_email: str, question: str) -> None:
     from rag import pipeline

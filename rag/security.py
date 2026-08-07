@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import html
 import re
-import time
 from pathlib import Path
 
 # ---- Limits (tune in one place) ----
@@ -20,9 +19,6 @@ MAX_DOCS_PER_USER = 60  # cap on manually uploaded documents per user
 # Drive scans read files in place (no browser upload), so they get a higher
 # per-file cap and no per-user document cap — that's the whole point of them.
 MAX_DRIVE_FILE_MB = 200
-MAX_QUESTION_CHARS = 2000  # longest question we'll send to the model
-RATE_LIMIT_MAX = 20  # max questions ...
-RATE_LIMIT_WINDOW_S = 60  # ... per this many seconds, per session
 
 # Strict email — only safe characters, so it can never carry HTML/script.
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
@@ -98,18 +94,3 @@ def storage_name(user_email: str, filename: str) -> str:
     # Store only a safe basename on disk. The source path itself stays in
     # Chroma metadata, where it is used for citations.
     return f"{user_digest}__{file_digest}__{sanitize_filename(Path(source).name)}"
-
-
-def rate_limited(history: list[float], now: float | None = None) -> bool:
-    """Sliding-window rate limit. Mutates ``history`` in place; returns True if
-    the caller has exceeded ``RATE_LIMIT_MAX`` requests in the window.
-
-    ``now`` is injected (Streamlit passes ``time.time()``) so this stays testable.
-    """
-    now = time.time() if now is None else now
-    cutoff = now - RATE_LIMIT_WINDOW_S
-    history[:] = [t for t in history if t > cutoff]  # drop old entries
-    if len(history) >= RATE_LIMIT_MAX:
-        return True
-    history.append(now)
-    return False
