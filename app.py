@@ -109,7 +109,9 @@ def inject_styles() -> None:
             padding-top: 2.4rem !important;
             /* Reserve space so the last expanded source can scroll above the
                fixed question box instead of being hidden behind it. */
-            padding-bottom: 11rem !important;
+            /* Reduced from 11rem to 7rem to avoid a large gap while still
+               keeping the fixed chat input from covering expanded sources. */
+            padding-bottom: 7rem !important;
             min-height: calc(100vh - 80px) !important; /* keep the main area tall so the question box appears lower */
         }
 
@@ -263,14 +265,20 @@ def inject_styles() -> None:
         }
         /* Long source excerpts scroll inside their own panel. They no longer
            continue underneath the fixed question box. */
-        .st-key-source-details {
-            scroll-margin-bottom: 10rem;
+        [class*="st-key-source-details"] {
+            /* Match any element whose class contains the source-details key
+               so per-message keys like "source-details-3" are picked up. */
+            scroll-margin-bottom: 7rem;
+            position: relative;
+            z-index: 99999; /* place expanded source panels above the fixed input */
         }
-        .st-key-source-details [data-testid="stExpander"] > details > div {
-            max-height: min(34rem, calc(100vh - 16rem));
+        [class*="st-key-source-details"] [data-testid="stExpander"] > details > div {
+            max-height: min(34rem, calc(100vh - 12rem));
             overflow-y: auto;
             overscroll-behavior: contain;
-            padding-bottom: 0.75rem;
+            padding-bottom: 1rem;
+            position: relative;
+            z-index: 99999;
         }
 
         /* File uploader dropzone */
