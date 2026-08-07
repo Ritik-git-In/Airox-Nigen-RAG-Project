@@ -228,7 +228,9 @@ def inject_styles() -> None:
             left: clamp(1.25rem, 5.2vw, 6.25rem) !important;
             right: clamp(1.25rem, 5.2vw, 6.25rem) !important;
             bottom: 1.25rem !important;
-            z-index: 99997 !important;
+            /* Lower the chat input z-index so expanded source panels can
+               reliably appear above it (source panels use 99999). */
+            z-index: 99000 !important;
             border-radius: 14px;
             border: 1px solid rgba(124,108,246,.45);
             background: rgba(20,26,40,0.95);
@@ -276,9 +278,19 @@ def inject_styles() -> None:
             max-height: min(34rem, calc(100vh - 12rem));
             overflow-y: auto;
             overscroll-behavior: contain;
-            padding-bottom: 1rem;
+            /* Ensure the inner scrollable area leaves room for the fixed input
+               and avoids being clipped. */
+            padding-bottom: 6rem;
             position: relative;
             z-index: 99999;
+        }
+
+        /* When an expander is focused/opened, give the browser a scroll margin
+           so it doesn't place the bottom of the expander underneath the
+           fixed chat input. */
+        [data-testid="stExpander"] > details,
+        [data-testid="stExpander"] > details > summary {
+            scroll-margin-bottom: 8rem;
         }
 
         /* File uploader dropzone */
