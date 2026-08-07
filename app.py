@@ -107,7 +107,9 @@ def inject_styles() -> None:
         /* Pull everything up: Streamlit's default top padding is very large */
         [data-testid="stMainBlockContainer"], .block-container {
             padding-top: 2.4rem !important;
-            padding-bottom: 6.0rem !important; /* more bottom space so inputs sit lower */
+            /* Reserve space so the last expanded source can scroll above the
+               fixed question box instead of being hidden behind it. */
+            padding-bottom: 11rem !important;
             min-height: calc(100vh - 80px) !important; /* keep the main area tall so the question box appears lower */
         }
 
@@ -218,17 +220,32 @@ def inject_styles() -> None:
 
         /* Chat input */
         [data-testid="stChatInput"] {
+            /* Streamlit may place this widget after an expanded source. Pin
+               it to the viewport so it is always available at the bottom. */
+            position: fixed !important;
+            left: clamp(1.25rem, 5.2vw, 6.25rem) !important;
+            right: clamp(1.25rem, 5.2vw, 6.25rem) !important;
+            bottom: 1.25rem !important;
+            z-index: 99997 !important;
             border-radius: 14px;
             border: 1px solid rgba(124,108,246,.45);
             background: rgba(20,26,40,0.95);
             box-shadow: 0 10px 36px rgba(0,0,0,0.45);
-            margin-top: 40px !important; /* nudge the question box significantly lower within its container */
-            transition: margin-top .18s ease;
+            margin-top: 0 !important;
         }
 
-        /* If the question input sits inside a PDF display node, ensure it's pushed further down there too */
-        .stApp [data-testid="stMainBlockContainer"] .stFileUploaderDropzone ~ div [data-testid="stChatInput"] {
-            margin-top: 56px !important;
+        /* Keep the fixed input within the main pane while the sidebar is open. */
+        body:has([data-testid="stSidebar"][aria-expanded="true"])
+        [data-testid="stChatInput"] {
+            left: calc(300px + clamp(1.25rem, 5.2vw, 6.25rem)) !important;
+        }
+
+        @media (max-width: 640px) {
+            [data-testid="stChatInput"] {
+                left: 1rem !important;
+                right: 1rem !important;
+                bottom: 0.8rem !important;
+            }
         }
 
         /* Sidebar */
@@ -243,6 +260,17 @@ def inject_styles() -> None:
             border-radius: 12px;
             border: 1px solid rgba(255,255,255,0.07);
             background: rgba(255,255,255,0.02);
+        }
+        /* Long source excerpts scroll inside their own panel. They no longer
+           continue underneath the fixed question box. */
+        .st-key-source-details {
+            scroll-margin-bottom: 10rem;
+        }
+        .st-key-source-details [data-testid="stExpander"] > details > div {
+            max-height: min(34rem, calc(100vh - 16rem));
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            padding-bottom: 0.75rem;
         }
 
         /* File uploader dropzone */
@@ -1085,6 +1113,13 @@ def _handle_question(user_email: str, question: str) -> None:
 
 def _render_sources(sources: list) -> None:
     """Show the retrieved chunks so the user can verify where the answer came from."""
+    # Key the wrapper so source-panel sizing never affects other expanders.
+    with st.container(key="source-details"):
+        _render_source_details(sources)
+
+
+def _render_source_details(sources: list) -> None:
+    """Render the contents of the bounded, scrollable source panel."""
     with st.expander(f"📑 Sources used ({len(sources)})"):
         for i, s in enumerate(sources, start=1):
             src = s["source"] if isinstance(s, dict) else s.source
