@@ -1064,11 +1064,11 @@ def chat_view(user_email: str) -> None:
         )
 
     # Replay history.
-    for msg in st.session_state.messages:
+    for i, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("sources"):
-                _render_sources(msg["sources"])
+                _render_sources(msg["sources"], i)
 
     # ``st.chat_input`` stays pinned to the bottom of the viewport (like
     # ChatGPT/Claude) while the conversation scrolls above it.
@@ -1098,7 +1098,8 @@ def _handle_question(user_email: str, question: str) -> None:
             answer = pipeline.ask(user_email, question)
         st.markdown(answer.text)
         if answer.sources:
-            _render_sources(answer.sources)
+            # Use the current message index so each rendered source panel gets a unique key.
+            _render_sources(answer.sources, len(st.session_state.messages))
         st.session_state.messages.append(
             {
                 "role": "assistant",
@@ -1111,10 +1112,13 @@ def _handle_question(user_email: str, question: str) -> None:
         )
 
 
-def _render_sources(sources: list) -> None:
+def _render_sources(sources: list, idx: int | None = None) -> None:
     """Show the retrieved chunks so the user can verify where the answer came from."""
     # Key the wrapper so source-panel sizing never affects other expanders.
-    with st.container(key="source-details"):
+    # Use a distinct key per rendered message (based on its index) so multiple
+    # source panels in the page don't collide.
+    key = f"source-details-{idx}" if idx is not None else f"source-details-{int(time.time()*1000)}"
+    with st.container(key=key):
         _render_source_details(sources)
 
 
