@@ -138,7 +138,18 @@ def replace_source_chunks(user_email: str, source: str, chunks: list[Chunk]) -> 
 
 
 def query(user_email: str, question: str, top_k: int) -> list[Retrieved]:
-    """Return the ``top_k`` most similar chunks to ``question``."""
+    """Return the ``top_k`` most similar chunks to ``question``, plus each
+    hit's immediate next chunk on the same page.
+
+    A long list — a references section, a bullet list of features — often
+    spans more than one 1000-character chunk. Without the neighbor, a "list
+    everything in section X" question could match only the first half of
+    that list (whichever chunk scored higher) and silently drop the rest.
+    Pulling in chunk_index + 1 whenever chunk_index scores as a hit keeps
+    split content whole. Neighbors are fetched by id (a direct lookup, not
+    another similarity search) so this costs one extra cheap call, not a
+    second embedding.
+    """
     collection = _get_collection(user_email)
     if collection.count() == 0:
         return []
@@ -146,10 +157,12 @@ def query(user_email: str, question: str, top_k: int) -> list[Retrieved]:
         query_embeddings=[embed_query(question)],
         n_results=min(top_k, collection.count()),
     )
+    ids = result["ids"][0]
     docs = result["documents"][0]
     metas = result["metadatas"][0]
     dists = result["distances"][0]
-    return [
+
+    hits = [
         Retrieved(
             text=doc,
             source=meta.get("source", "unknown"),
@@ -158,6 +171,30 @@ def query(user_email: str, question: str, top_k: int) -> list[Retrieved]:
         )
         for doc, meta, dist in zip(docs, metas, dists)
     ]
+
+    seen_ids = set(ids)
+    neighbor_ids = []
+    for meta in metas:
+        neighbor_id = (
+            f"{meta.get('source', 'unknown')}"
+            f"::p{meta.get('page', 0)}::c{int(meta.get('chunk_index', 0)) + 1}"
+        )
+        if neighbor_id not in seen_ids:
+            seen_ids.add(neighbor_id)
+            neighbor_ids.append(neighbor_id)
+
+    if neighbor_ids:
+        neighbors = collection.get(ids=neighbor_ids, include=["documents", "metadatas"])
+        for doc, meta in zip(neighbors["documents"], neighbors["metadatas"]):
+            hits.append(
+                Retrieved(
+                    text=doc,
+                    source=meta.get("source", "unknown"),
+                    page=int(meta.get("page", 0)),
+                    distance=1.0,  # a neighbor pulled in for completeness, not independently ranked
+                )
+            )
+    return hits
 
 
 def list_sources(user_email: str) -> list[str]:

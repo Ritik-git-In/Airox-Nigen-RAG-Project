@@ -51,7 +51,11 @@ EMBEDDING_MODEL = _setting("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 # ---- Chunking / retrieval ----
 CHUNK_SIZE = int(_setting("CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(_setting("CHUNK_OVERLAP", "150"))
-TOP_K = int(_setting("TOP_K", "5"))
+# Raised from 5: with only 5 chunks retrieved, a request to enumerate
+# everything in one section (e.g. "all the references") often only got part
+# of it — the section's own text is usually split across more than 5 chunks,
+# and/or other documents' chunks crowded out some of it.
+TOP_K = int(_setting("TOP_K", "10"))
 
 
 def ensure_dirs() -> None:

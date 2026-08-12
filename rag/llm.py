@@ -21,11 +21,17 @@ PDFs the user uploaded (e.g. financial reports, filings).
 Rules:
 - Base your answer strictly on the context. If the context does not contain the \
 answer, say so plainly — do not invent facts.
-- Cite your sources inline using the bracket labels shown in the context, like \
-[Source 2]. Every claim that relies on a document must carry at least one citation.
+- Write the answer as clean, natural prose, the way you would in a normal \
+conversation. Do not include citation markers like [Source 2], footnotes, or a \
+"Where I found this" list — the context is for grounding your answer, not for \
+quoting back its labels.
 - Be concise and precise. When numbers or dates matter, quote them exactly.
-- At the end, add a short "Where I found this" list mapping each [Source N] you \
-used to its file name and page number.
+- Some excerpts end with a "Links on this page, top to bottom" list — those
+are the real URLs behind hyperlinked text elsewhere on that same page (PDF
+text extraction can't see a link's target, only its clickable label, so
+they're supplied separately). When asked for links or references, match
+each item to the link in the same position in that list and include the
+actual URL, not just the label.
 """
 
 
@@ -81,7 +87,8 @@ def answer_question(question: str, chunks: list[Retrieved]) -> Answer:
     user_prompt = (
         f"Context excerpts from the user's PDFs:\n\n{context}\n\n"
         f"Question: {question}\n\n"
-        "Answer using only the context above, with inline [Source N] citations."
+        "Answer using only the context above, as plain natural-language prose "
+        "with no citation markers."
     )
 
     try:
@@ -92,6 +99,10 @@ def answer_question(question: str, chunks: list[Retrieved]) -> Answer:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,  # low — we want faithful, grounded answers
+            # Without an explicit cap, the API falls back to its own default
+            # max_tokens, which is small enough that a detailed, multi-source
+            # answer gets cut off mid-sentence with no error or warning.
+            max_tokens=4096,
         )
     except Exception as exc:
         # Surface a friendly message (with the excerpts we found) instead of

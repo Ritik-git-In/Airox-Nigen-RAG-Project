@@ -44,10 +44,10 @@ def inject_styles() -> None:
 
         html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-        /* Hide default Streamlit chrome: menu, footer, Deploy button,
-           and the "running… / Stop" status widget that flashes on rerun. */
+        /* Hide default Streamlit chrome: menu, footer, Deploy button. The
+           native "Running..." status widget is left alone (see below) — it's
+           the searching/thinking indicator, not decorative chrome. */
         #MainMenu, footer,
-        [data-testid="stStatusWidget"],
         [data-testid="stDeployButton"],
         [data-testid="stToolbarActions"] { display: none !important; }
         /* Visual header hiding and click-through. */
@@ -64,24 +64,26 @@ def inject_styles() -> None:
             width: 100% !important;
             pointer-events: none !important;
         }
+        /* Sidebar open/close uses Streamlit's own native control — a custom
+           JS-driven replacement (a hand-built button + hand-built open/close
+           CSS state) was tried and repeatedly broke (overlap bugs, then
+           stopped opening at all). Streamlit's own button is guaranteed to
+           work; it just needs pointer-events restored since it lives inside
+           stHeader, which the rule above disables clicks on. */
         [data-testid="stExpandSidebarButton"] {
-            position: fixed !important;
-            left: 10px !important;
-            top: 10px !important;
-            z-index: 999999 !important;
-            width: 40px !important;
-            height: 40px !important;
             pointer-events: auto !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            background-color: rgba(255,255,255,0.08) !important;
-            border: 1px solid rgba(255,255,255,0.14) !important;
-            border-radius: 12px !important;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.35) !important;
         }
-        [data-testid="stExpandSidebarButton"] span {
-            width: auto !important;
+        /* Keep the native "Running..." indicator above the custom navbar
+           (z-index 99998, further below) so it isn't hidden behind that
+           solid-background bar. Only just above the navbar, not up near the
+           sidebar toggle button's range (999999) — giving it that much
+           priority risked it intercepting clicks meant for the button. */
+        [data-testid="stStatusWidget"] {
+            z-index: 99999 !important;
+            /* Purely informational, never something a user clicks — make
+               sure it can never sit on top of and intercept clicks meant
+               for the sidebar toggle button or anything else. */
+            pointer-events: none !important;
         }
 
         /* Tighter dark backdrop applied to all main containers so footers/panels match */
@@ -107,11 +109,10 @@ def inject_styles() -> None:
         /* Pull everything up: Streamlit's default top padding is very large */
         [data-testid="stMainBlockContainer"], .block-container {
             padding-top: 2.4rem !important;
-            /* Reserve space so the last expanded source can scroll above the
-               fixed question box instead of being hidden behind it. */
-            /* Reduced from 11rem to 7rem to avoid a large gap while still
-               keeping the fixed chat input from covering expanded sources. */
-            padding-bottom: 7rem !important;
+            /* Reserve space so the last message — even a long one, like a
+               multi-item reference list — can scroll fully clear above the
+               fixed question box instead of ending up hidden behind it. */
+            padding-bottom: 16rem !important;
             min-height: calc(100vh - 80px) !important; /* keep the main area tall so the question box appears lower */
         }
 
@@ -165,7 +166,6 @@ def inject_styles() -> None:
             box-shadow: none;
             padding: 2px 0;
             margin-bottom: 8px;
-            animation: fadeInUp 0.3s ease both;
         }
         [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p {
             line-height: 1.65;
@@ -202,11 +202,6 @@ def inject_styles() -> None:
             color: #fff !important;
         }
 
-        @keyframes fadeInUp {
-            from { opacity: 0; transform: translateY(12px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-
         /* Buttons */
         .stButton > button, .stFormSubmitButton > button {
             border-radius: 11px; border: none; font-weight: 600;
@@ -220,20 +215,43 @@ def inject_styles() -> None:
             filter: brightness(1.05);
         }
 
+        /* Streamlit's own native container for the chat input
+           ([data-testid="stBottomBlockContainer"], inside
+           [data-testid="stBottom"]) keeps its own padding (16px 16px 56px,
+           confirmed via devtools) even after the rule below pulls its child
+           — the actual visible input — out via position:fixed. Left alone,
+           that empty, padded parent box still sits in the normal page flow
+           whenever "stBottom" happens to render inline in the content
+           rather than as a page-level sibling — this is the blank gap that
+           kept appearing partway through long messages. Collapsing it here
+           removes the empty box without touching the input's own fixed
+           positioning below. */
+        [data-testid="stBottom"],
+        [data-testid="stBottomBlockContainer"] {
+            padding: 0 !important;
+            margin: 0 !important;
+            min-height: 0 !important;
+            height: 0 !important;
+            overflow: visible !important;
+        }
+
         /* Chat input */
         [data-testid="stChatInput"] {
-            /* Streamlit may place this widget after an expanded source. Pin
-               it to the viewport so it is always available at the bottom. */
+            /* Pinned to the viewport, flush with the bottom edge. Earlier
+               attempts to float this (a gap under it, a box-shadow trick to
+               fill that gap) kept introducing visual artifacts. Flush is the
+               simplest configuration that has been reliably solid. */
             position: fixed !important;
             left: clamp(1.25rem, 5.2vw, 6.25rem) !important;
             right: clamp(1.25rem, 5.2vw, 6.25rem) !important;
-            bottom: 1.25rem !important;
-            /* Lower the chat input z-index so expanded source panels can
-               reliably appear above it (source panels use 99999). */
+            bottom: 0 !important;
+            border-radius: 14px 14px 0 0;
+            /* Lower than expanded source panels (99999) so those can render
+               above this input instead of being covered by it. */
             z-index: 99000 !important;
-            border-radius: 14px;
             border: 1px solid rgba(124,108,246,.45);
-            background: rgba(20,26,40,0.95);
+            border-bottom: none;
+            background: #141a28;
             box-shadow: 0 10px 36px rgba(0,0,0,0.45);
             margin-top: 0 !important;
         }
@@ -248,7 +266,6 @@ def inject_styles() -> None:
             [data-testid="stChatInput"] {
                 left: 1rem !important;
                 right: 1rem !important;
-                bottom: 0.8rem !important;
             }
         }
 
@@ -265,24 +282,15 @@ def inject_styles() -> None:
             border: 1px solid rgba(255,255,255,0.07);
             background: rgba(255,255,255,0.02);
         }
-        /* Long source excerpts scroll inside their own panel. They no longer
-           continue underneath the fixed question box. */
+        /* Match any element whose class contains the source-details key so
+           per-message keys like "source-details-3" are picked up. No
+           z-index here: this is normal scrolling page content and must
+           stay BELOW the fixed navbar/chat input, not above them — giving
+           it a higher z-index than the fixed chrome (as before) let its
+           text render on top of the navbar/input when scrolled behind
+           them, which looked like the fixed bars had gone transparent. */
         [class*="st-key-source-details"] {
-            /* Match any element whose class contains the source-details key
-               so per-message keys like "source-details-3" are picked up. */
             scroll-margin-bottom: 7rem;
-            position: relative;
-            z-index: 99999; /* place expanded source panels above the fixed input */
-        }
-        [class*="st-key-source-details"] [data-testid="stExpander"] > details > div {
-            max-height: min(34rem, calc(100vh - 12rem));
-            overflow-y: auto;
-            overscroll-behavior: contain;
-            /* Ensure the inner scrollable area leaves room for the fixed input
-               and avoids being clipped. */
-            padding-bottom: 6rem;
-            position: relative;
-            z-index: 99999;
         }
 
         /* When an expander is focused/opened, give the browser a scroll margin
@@ -393,6 +401,10 @@ def _init_state() -> None:
     st.session_state.setdefault("user_email", None)
     st.session_state.setdefault("messages", [])  # list[dict(role, content, sources)]
     st.session_state.setdefault("upload_mode", None)  # "pdf" | "folder"
+    # Bumped after each successful index so the file_uploader widgets below
+    # get a fresh key and drop their previous selection instead of Streamlit
+    # re-showing the just-indexed files (uploaders remember files by key).
+    st.session_state.setdefault("uploader_nonce", 0)
 
 
 @st.cache_resource(show_spinner=False)
@@ -512,200 +524,6 @@ def login_view() -> None:
                         st.error(msg)
 
 
-def inject_header_toggle() -> None:
-    """Inject a small top-left toggle button that opens/closes the sidebar.
-
-    The script creates a button in the page root and toggles the sidebar
-    directly using the page DOM, then closes it when clicking outside.
-    """
-    components.html(
-        """
-        <script>
-        (function () {
-            const topDoc = window.top.document;
-            if (!topDoc || !topDoc.body) return;
-
-            const styleId = 'custom-sidebar-toggle-style';
-            if (!topDoc.getElementById(styleId)) {
-                const style = topDoc.createElement('style');
-                style.id = styleId;
-                style.textContent = `
-                #custom-sidebar-toggle {
-                    position: fixed !important;
-                    top: 10px !important;
-                    left: 10px !important;
-                    z-index: 999999 !important;
-                    width: 46px !important;
-                    height: 46px !important;
-                    border-radius: 16px !important;
-                    background: rgba(255,255,255,0.12) !important;
-                    border: 1px solid rgba(255,255,255,0.16) !important;
-                    display: grid !important;
-                    place-items: center !important;
-                    cursor: pointer !important;
-                    box-shadow: 0 20px 50px rgba(0,0,0,0.45) !important;
-                    transition: transform .16s ease, background .16s ease !important;
-                    pointer-events: auto !important;
-                }
-                #custom-sidebar-toggle:hover {
-                    transform: translateY(-1px) !important;
-                    background: rgba(255,255,255,0.20) !important;
-                }
-                #custom-sidebar-toggle span {
-                    font-size: 20px !important;
-                    color: #eef2ff !important;
-                    line-height: 1 !important;
-                }
-                [data-testid="stExpandSidebarButton"] {
-                    display: none !important;
-                }
-                [data-testid="stSidebar"],
-                .stSidebar.st-emotion-cache-l7lcii {
-                    transform: translateX(var(--custom-sidebar-x, -300px)) !important;
-                    min-width: var(--custom-sidebar-min-width, 0px) !important;
-                    max-width: var(--custom-sidebar-max-width, 0px) !important;
-                    width: var(--custom-sidebar-width, 0px) !important;
-                    overflow: var(--custom-sidebar-overflow, hidden) !important;
-                    visibility: var(--custom-sidebar-visibility, hidden) !important;
-                    opacity: var(--custom-sidebar-opacity, 0) !important;
-                    transition: transform 320ms ease !important, min-width 320ms ease !important, max-width 320ms ease !important, width 320ms ease !important, opacity 320ms ease !important;
-                }
-                [data-testid="stSidebar"][aria-expanded="true"],
-                .stSidebar.st-emotion-cache-l7lcii[aria-expanded="true"] {
-                    --custom-sidebar-x: 0px !important;
-                    --custom-sidebar-min-width: 300px !important;
-                    --custom-sidebar-max-width: 300px !important;
-                    --custom-sidebar-width: 300px !important;
-                    --custom-sidebar-overflow: visible !important;
-                    --custom-sidebar-visibility: visible !important;
-                    --custom-sidebar-opacity: 1 !important;
-                }
-                [data-testid="stSidebar"][aria-expanded="false"],
-                .stSidebar.st-emotion-cache-l7lcii[aria-expanded="false"] {
-                    --custom-sidebar-x: -300px !important;
-                    --custom-sidebar-min-width: 0px !important;
-                    --custom-sidebar-max-width: 0px !important;
-                    --custom-sidebar-width: 0px !important;
-                    --custom-sidebar-overflow: hidden !important;
-                    --custom-sidebar-visibility: hidden !important;
-                    --custom-sidebar-opacity: 0 !important;
-                }
-                `;
-                topDoc.head.appendChild(style);
-            }
-
-            function getSidebar() {
-                const docs = [topDoc].concat(
-                    Array.from(topDoc.querySelectorAll('iframe')).map((frame) => {
-                        try {
-                            return frame.contentDocument || frame.contentWindow?.document || null;
-                        } catch (err) {
-                            return null;
-                        }
-                    }).filter(Boolean)
-                );
-                for (const doc of docs) {
-                    const sidebar = doc.querySelector('[data-testid="stSidebar"]');
-                    if (sidebar) return {sidebar, doc};
-                }
-                return null;
-            }
-
-            function isSidebarOpen(found) {
-                if (!found) return false;
-                const cs = found.doc.defaultView.getComputedStyle(found.sidebar);
-                const rect = found.sidebar.getBoundingClientRect();
-                return rect.left >= 0 && cs.visibility !== 'hidden' && cs.opacity !== '0';
-            }
-
-            function setSidebarOpen(open) {
-                const found = getSidebar();
-                if (!found) return;
-                const {sidebar} = found;
-                if (open) {
-                    sidebar.style.setProperty('--custom-sidebar-x', '0px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-min-width', '300px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-max-width', '300px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-width', '300px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-overflow', 'visible', 'important');
-                    sidebar.style.removeProperty('visibility');
-                    sidebar.style.removeProperty('opacity');
-                    sidebar.setAttribute('aria-expanded', 'true');
-                } else {
-                    sidebar.style.setProperty('--custom-sidebar-x', '-300px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-min-width', '0px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-max-width', '0px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-width', '0px', 'important');
-                    sidebar.style.setProperty('--custom-sidebar-overflow', 'hidden', 'important');
-                    sidebar.setAttribute('aria-expanded', 'false');
-                }
-            }
-
-            function toggleSidebar(ev) {
-                if (ev) {
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                }
-                const found = getSidebar();
-                if (!found) return;
-                setSidebarOpen(!isSidebarOpen(found));
-            }
-
-            let toggleButton = topDoc.getElementById('custom-sidebar-toggle');
-            if (!toggleButton) {
-                toggleButton = topDoc.createElement('button');
-                toggleButton.id = 'custom-sidebar-toggle';
-                toggleButton.type = 'button';
-                toggleButton.title = 'Toggle menu';
-                toggleButton.innerHTML = '<span aria-hidden="true">☰</span>';
-                toggleButton.addEventListener('click', toggleSidebar);
-                topDoc.body.appendChild(toggleButton);
-            } else {
-                const replacement = toggleButton.cloneNode(true);
-                replacement.removeAttribute('onclick');
-                replacement.onclick = null;
-                replacement.addEventListener('click', toggleSidebar);
-                toggleButton.parentNode.replaceChild(replacement, toggleButton);
-                toggleButton = replacement;
-            }
-
-            function hideNativeToggle() {
-                const native = topDoc.querySelector('[data-testid="stExpandSidebarButton"]');
-                if (native) native.style.setProperty('display', 'none', 'important');
-            }
-            hideNativeToggle();
-
-            topDoc.addEventListener('click', function (event) {
-                const found = getSidebar();
-                if (!found) return;
-                if (toggleButton.contains(event.target) || found.sidebar.contains(event.target)) return;
-                if (isSidebarOpen(found)) {
-                    setSidebarOpen(false);
-                }
-            }, true);
-
-            topDoc.addEventListener('keydown', function (event) {
-                if (event.key === 'Escape') {
-                    const found = getSidebar();
-                    if (found && isSidebarOpen(found)) {
-                        setSidebarOpen(false);
-                    }
-                }
-            });
-
-            new MutationObserver(function () {
-                if (!topDoc.getElementById('custom-sidebar-toggle')) {
-                    topDoc.body.appendChild(toggleButton);
-                }
-                hideNativeToggle();
-            }).observe(topDoc.body, { childList: true, subtree: true });
-        })();
-        </script>
-        """,
-        height=0,
-    )
-
-
 def sidebar(user_email: str) -> None:
     """Directory upload area + the user's indexed documents."""
     with st.sidebar:
@@ -757,11 +575,12 @@ def sidebar(user_email: str) -> None:
                 height=0,
             )
 
+        nonce = st.session_state.uploader_nonce
         uploads = []
         if st.session_state.upload_mode == "pdf":
             st.caption("Upload one PDF")
             upload = st.file_uploader(
-                "Choose a PDF", type=["pdf"], key="single_pdf_upload"
+                "Choose a PDF", type=["pdf"], key=f"single_pdf_upload_{nonce}"
             )
             uploads = [upload] if upload else []
         elif st.session_state.upload_mode == "folder":
@@ -770,7 +589,7 @@ def sidebar(user_email: str) -> None:
                 "Choose a folder containing PDFs",
                 type=["pdf"],
                 accept_multiple_files="directory",
-                key="folder_pdf_upload",
+                key=f"folder_pdf_upload_{nonce}",
                 help="All PDFs in the selected folder and its subfolders are included.",
             )
         elif st.session_state.upload_mode == "drive":
@@ -928,6 +747,9 @@ def _index_uploads(user_email: str, uploads) -> None:
         progress.progress(i / total, text=f"Done {i}/{total}")
     catalog.save(user_email, cat)
     _sources_for.clear()
+    # New key on rerun -> a fresh, empty file_uploader instead of one that
+    # still shows the files just indexed.
+    st.session_state.uploader_nonce += 1
     time.sleep(0.4)
     progress.empty()
     st.rerun()
@@ -1084,11 +906,9 @@ def chat_view(user_email: str) -> None:
         )
 
     # Replay history.
-    for i, msg in enumerate(st.session_state.messages):
+    for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            if msg.get("sources"):
-                _render_sources(msg["sources"], i)
 
     # ``st.chat_input`` stays pinned to the bottom of the viewport (like
     # ChatGPT/Claude) while the conversation scrolls above it.
@@ -1098,10 +918,17 @@ def chat_view(user_email: str) -> None:
     )
 
     if question and question.strip():
-        question = question.strip()
-        _handle_question(user_email, question)
+        _handle_question(user_email, question.strip())
+
 
 def _handle_question(user_email: str, question: str) -> None:
+    """Render the new exchange live and store it — the standard, single-pass
+    Streamlit chat pattern. An earlier version forced two extra reruns per
+    question to avoid a source-panel double-render bug; now that the source
+    panel is disabled entirely that workaround serves no purpose, and it was
+    the more likely cause of a separate glitch (Streamlit's own internal
+    layout spacers ending up misplaced mid-message on very long answers).
+    """
     from rag import pipeline
 
     st.session_state.messages.append({"role": "user", "content": question})
@@ -1113,51 +940,46 @@ def _handle_question(user_email: str, question: str) -> None:
             text = "You haven't indexed any PDFs yet. Upload some from the sidebar first."
             st.markdown(text)
             st.session_state.messages.append({"role": "assistant", "content": text})
+            _scroll_to_bottom()
             return
         with st.spinner("Searching your documents and thinking…"):
             answer = pipeline.ask(user_email, question)
         st.markdown(answer.text)
-        if answer.sources:
-            # Use the current message index so each rendered source panel gets a unique key.
-            _render_sources(answer.sources, len(st.session_state.messages))
         st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": answer.text,
-                "sources": [
-                    {"source": s.source, "page": s.page, "text": s.text}
-                    for s in answer.sources
-                ],
-            }
+            {"role": "assistant", "content": answer.text}
         )
+    _scroll_to_bottom()
 
 
-def _render_sources(sources: list, idx: int | None = None) -> None:
-    """Show the retrieved chunks so the user can verify where the answer came from."""
-    # Key the wrapper so source-panel sizing never affects other expanders.
-    # Use a distinct key per rendered message (based on its index) so multiple
-    # source panels in the page don't collide.
-    key = f"source-details-{idx}" if idx is not None else f"source-details-{int(time.time()*1000)}"
-    with st.container(key=key):
-        _render_source_details(sources)
+def _scroll_to_bottom() -> None:
+    """Scroll the page to its true end right after a new answer renders.
 
-
-def _render_source_details(sources: list) -> None:
-    """Render the contents of the bounded, scrollable source panel."""
-    with st.expander(f"📑 Sources used ({len(sources)})"):
-        for i, s in enumerate(sources, start=1):
-            src = s["source"] if isinstance(s, dict) else s.source
-            page = s["page"] if isinstance(s, dict) else s.page
-            text = s["text"] if isinstance(s, dict) else s.text
-            st.markdown(f"**[Source {i}] {src} — page {page}**")
-            st.caption(text[:600] + ("…" if len(text) > 600 else ""))
+    The fixed chat input only stays clear of content once the page is
+    scrolled all the way down (the reserved padding-bottom lives past the
+    last message); without this, a fresh answer renders above the fold and
+    looks like it's partly hidden behind the input until the user manually
+    scrolls further. Runs once, right after the message that needs it is
+    already in the DOM — no competing animation to race, unlike the earlier
+    attempt to do this when a "Sources used" expander opened.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+            const doc = window.top.document;
+            const root = doc.scrollingElement || doc.documentElement;
+            root.scrollTo({top: root.scrollHeight, behavior: "auto"});
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 def main() -> None:
     _init_state()
     _start_backend_warmup()
     inject_styles()
-    inject_header_toggle()
     if not st.session_state.user_email:
         login_view()
         return
