@@ -68,10 +68,38 @@ def inject_styles() -> None:
            JS-driven replacement (a hand-built button + hand-built open/close
            CSS state) was tried and repeatedly broke (overlap bugs, then
            stopped opening at all). Streamlit's own button is guaranteed to
-           work; it just needs pointer-events restored since it lives inside
-           stHeader, which the rule above disables clicks on. */
+           work; it just needs pointer-events restored (it lives inside
+           stHeader, which the rule above disables clicks on) and its own
+           size back — the "stHeader *" rule above stretches it to the
+           header's full width by default. Sized and positioned here to sit
+           just left of the navbar title, not as a full-width bar. */
         [data-testid="stExpandSidebarButton"] {
             pointer-events: auto !important;
+            position: fixed !important;
+            top: 14px !important;
+            left: 14px !important;
+            width: 40px !important;
+            min-width: 40px !important;
+            max-width: 40px !important;
+            height: 40px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border-radius: 12px !important;
+            background: rgba(255,255,255,0.10) !important;
+            border: 1px solid rgba(255,255,255,0.16) !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            z-index: 99999 !important; /* above the navbar (99998) */
+            box-shadow: 0 10px 30px rgba(0,0,0,0.35) !important;
+            transition: background .15s ease !important;
+        }
+        [data-testid="stExpandSidebarButton"]:hover {
+            background: rgba(255,255,255,0.18) !important;
+        }
+        [data-testid="stExpandSidebarButton"] svg,
+        [data-testid="stExpandSidebarButton"] span {
+            width: auto !important;
         }
         /* Keep the native "Running..." indicator above the custom navbar
            (z-index 99998, further below) so it isn't hidden behind that
@@ -131,7 +159,10 @@ def inject_styles() -> None:
             z-index: 99998;
             width: 100%;
             margin: 0 !important;
-            padding: 10px clamp(1.25rem, 5.2vw, 6.25rem) 8px !important;
+            /* Left padding cleared for the sidebar-toggle button (fixed at
+               left:14px, 40px wide) so the title starts to its right
+               instead of sitting underneath it. */
+            padding: 10px clamp(1.25rem, 5.2vw, 6.25rem) 8px 4.5rem !important;
             background: #050505;
             box-shadow: 0 10px 24px rgba(0,0,0,0.38);
         }
@@ -141,7 +172,6 @@ def inject_styles() -> None:
 
         @media (max-width: 640px) {
             .st-key-app-navbar {
-                padding-left: 4.5rem !important;
                 padding-right: 1rem !important;
             }
             .app-navbar-spacer { height: 82px; }
@@ -299,6 +329,52 @@ def inject_styles() -> None:
         [data-testid="stExpander"] > details,
         [data-testid="stExpander"] > details > summary {
             scroll-margin-bottom: 8rem;
+        }
+
+        /* Document search box: drop the "Press Enter to apply" hint
+           Streamlit shows under every text_input — it's redundant clutter
+           for a simple filter box. */
+        .st-key-doc_search_wrap [data-testid="InputInstructions"] {
+            display: none !important;
+        }
+        /* Google-style search box: the input and its clear button are two
+           separate Streamlit elements side by side — remove the gap between
+           their columns and round only the outer corners of each so they
+           read as one continuous pill instead of two boxes. */
+        .st-key-doc_search_wrap [data-testid="stHorizontalBlock"] {
+            gap: 0 !important;
+            align-items: center !important;
+        }
+        .st-key-doc_search_wrap [data-testid="stTextInputRootElement"] {
+            border-radius: 999px 0 0 999px !important;
+            border: 1px solid rgba(255,255,255,0.14) !important;
+            border-right: none !important;
+            background: rgba(255,255,255,0.04) !important;
+            box-shadow: none !important;
+        }
+        .st-key-doc_search_wrap [data-testid="stTextInputRootElement"]:focus-within {
+            border-color: rgba(255,255,255,0.30) !important;
+        }
+        .st-key-doc_search_wrap [data-testid="stTextInputIcon"] {
+            color: #8b93a7 !important;
+        }
+        .st-key-doc_search_wrap [data-testid="stTextInput"] input {
+            background: transparent !important;
+        }
+        .st-key-doc_search_wrap [data-testid="stBaseButton-secondary"] {
+            border-radius: 0 999px 999px 0 !important;
+            border: 1px solid rgba(255,255,255,0.14) !important;
+            border-left: 1px solid rgba(255,255,255,0.10) !important;
+            background: rgba(255,255,255,0.04) !important;
+            color: #8b93a7 !important;
+            height: 2.5rem !important;
+            box-shadow: none !important;
+        }
+        .st-key-doc_search_wrap [data-testid="stBaseButton-secondary"]:hover {
+            background: rgba(255,255,255,0.09) !important;
+            color: #e8eaf2 !important;
+            transform: none !important;
+            box-shadow: none !important;
         }
 
         /* File uploader dropzone */
@@ -631,21 +707,52 @@ def sidebar(user_email: str) -> None:
         st.subheader(f"Your documents ({len(sources):,})" if sources else "Your documents")
         if not sources:
             st.caption("No documents indexed yet.")
-        # Drive scans can index thousands of PDFs; rendering a row (plus a
-        # delete button) for each would make every rerun crawl. Cap the list.
-        _MAX_LISTED = 30
-        for src in sources[:_MAX_LISTED]:
-            cols = st.columns([0.82, 0.18])
-            cols[0].write(f"• {src}")
-            if cols[1].button("🗑", key=f"del_{src}", help=f"Remove {src}"):
-                from rag import catalog, vectorstore
+        else:
+            # A drive scan can index thousands of PDFs; scanning the list
+            # visually for one file name isn't practical at that scale.
+            with st.container(key="doc_search_wrap"):
+                search_col, clear_col = st.columns([0.85, 0.15])
+                with search_col:
+                    search = st.text_input(
+                        "Search your documents",
+                        placeholder="Search by file name…",
+                        icon="🔍",
+                        key="doc_search",
+                        label_visibility="collapsed",
+                    )
+                with clear_col:
+                    # A text_input only picks up an edit on blur/Enter, so
+                    # backspacing it clear and clicking away can feel
+                    # sluggish. A button click reruns immediately — a fast,
+                    # one-click way back to the full list instead of waiting
+                    # on that.
+                    st.button(
+                        "✕",
+                        key="clear_doc_search_btn",
+                        help="Clear search",
+                        disabled=not search,
+                        on_click=lambda: st.session_state.update(doc_search=""),
+                    )
+            query = search.strip().lower()
+            visible = [s for s in sources if query in s.lower()] if query else sources
+            if query and not visible:
+                st.caption(f"No documents match “{search.strip()}”.")
+            # Drive scans can index thousands of PDFs; rendering a row (plus
+            # a delete button) for each would make every rerun crawl. Cap
+            # the list.
+            _MAX_LISTED = 30
+            for src in visible[:_MAX_LISTED]:
+                cols = st.columns([0.82, 0.18])
+                cols[0].write(f"• {src}")
+                if cols[1].button("🗑", key=f"del_{src}", help=f"Remove {src}"):
+                    from rag import catalog, vectorstore
 
-                vectorstore.delete_source(user_email, src)
-                catalog.remove(user_email, src)
-                _sources_for.clear()
-                st.rerun()
-        if len(sources) > _MAX_LISTED:
-            st.caption(f"…and {len(sources) - _MAX_LISTED:,} more.")
+                    vectorstore.delete_source(user_email, src)
+                    catalog.remove(user_email, src)
+                    _sources_for.clear()
+                    st.rerun()
+            if len(visible) > _MAX_LISTED:
+                st.caption(f"…and {len(visible) - _MAX_LISTED:,} more.")
         if sources:
             with st.popover("🧹 Remove all documents", use_container_width=True):
                 st.caption(
