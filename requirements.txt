@@ -19,6 +19,14 @@ openai>=1.50
 # Load API keys from a .env file
 python-dotenv>=1.0
 
+# OCR fallback for scanned/image-only PDF pages: PyMuPDF renders a page to
+# an image (no separate Poppler install needed), pytesseract runs it through
+# Tesseract. Tesseract itself is a SEPARATE, non-pip system install — see
+# README for the installer link. Without it, OCR is skipped automatically
+# (scanned pages are just left out of the index, same as before this feature).
+pymupdf>=1.24
+pytesseract>=0.3.10
+
 # chromadb -> opentelemetry ships protobuf-generated code. On Streamlit Cloud the
 # resolver landed a NEW protobuf next to OLD generated code, which crashes at
 # import ("Descriptors cannot be created directly"). Pinning protobuf to 5.x keeps

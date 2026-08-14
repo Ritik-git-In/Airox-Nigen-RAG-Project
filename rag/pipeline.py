@@ -22,6 +22,7 @@ class IngestResult:
     source: str
     pages: int
     chunks: int
+    ocr_pages: int = 0  # how many of those pages needed OCR (scanned/image pages)
 
 
 def ingest_pdf(
@@ -34,7 +35,8 @@ def ingest_pdf(
     # Re-uploading refreshes the source while preserving the prior index if
     # embedding or storage fails partway through the replacement.
     stored = vectorstore.replace_source_chunks(user_email, name, chunks)
-    return IngestResult(source=name, pages=len(pages), chunks=stored)
+    ocr_pages = sum(1 for p in pages if p.ocr)
+    return IngestResult(source=name, pages=len(pages), chunks=stored, ocr_pages=ocr_pages)
 
 
 def ask(user_email: str, question: str, top_k: int | None = None) -> Answer:

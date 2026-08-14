@@ -792,67 +792,73 @@ def _index_uploads(user_email: str, uploads) -> None:
         uploads = uploads[: security.MAX_FILES_PER_UPLOAD]
 
     existing = set(_sources_for(user_email))  # also seeds the catalog if needed
-    cat = catalog.load(user_email) or {}
     progress = st.progress(0.0, text="Starting…")
     total = len(uploads)
-    for i, uploaded in enumerate(uploads, start=1):
-        # Streamlit's directory uploader includes files from nested folders.
-        # Keep their safe relative names so citations identify the right PDF.
-        display_name = security.sanitize_source_name(uploaded.name)
-        data = bytes(uploaded.getbuffer())
+    # One session for the whole batch: each record is still committed to
+    # disk immediately (see rag.catalog), just without reopening a fresh
+    # SQLite connection per file.
+    with catalog.session(user_email) as cat:
+        for i, uploaded in enumerate(uploads, start=1):
+            # Streamlit's directory uploader includes files from nested
+            # folders. Keep their safe relative names so citations identify
+            # the right PDF.
+            display_name = security.sanitize_source_name(uploaded.name)
+            data = bytes(uploaded.getbuffer())
 
-        # --- validation gates ---
-        if len(data) > security.MAX_FILE_MB * 1024 * 1024:
-            st.error(f"{display_name}: larger than {security.MAX_FILE_MB} MB — skipped.")
-            progress.progress(i / total)
-            continue
-        if not security.looks_like_pdf(data):
-            st.error(f"{display_name}: doesn't look like a real PDF — skipped.")
-            progress.progress(i / total)
-            continue
-        if (
-            display_name not in existing
-            and len(existing) >= security.MAX_DOCS_PER_USER
-        ):
-            st.error(
-                f"{display_name}: document limit reached "
-                f"({security.MAX_DOCS_PER_USER} per account) — skipped."
-            )
-            progress.progress(i / total)
-            continue
-
-        dest = config.UPLOAD_DIR / security.storage_name(user_email, display_name)
-        progress.progress((i - 0.5) / total, text=f"Indexing {display_name}…")
-        try:
-            dest.write_bytes(data)
-            result = pipeline.ingest_pdf(user_email, dest, source_name=display_name)
-            if result.chunks == 0:
-                st.warning(
-                    f"{display_name}: no extractable text found — it may be a "
-                    "scanned image. (OCR isn't enabled yet.)"
+            # --- validation gates ---
+            if len(data) > security.MAX_FILE_MB * 1024 * 1024:
+                st.error(f"{display_name}: larger than {security.MAX_FILE_MB} MB — skipped.")
+                progress.progress(i / total)
+                continue
+            if not security.looks_like_pdf(data):
+                st.error(f"{display_name}: doesn't look like a real PDF — skipped.")
+                progress.progress(i / total)
+                continue
+            if (
+                display_name not in existing
+                and len(existing) >= security.MAX_DOCS_PER_USER
+            ):
+                st.error(
+                    f"{display_name}: document limit reached "
+                    f"({security.MAX_DOCS_PER_USER} per account) — skipped."
                 )
-            else:
-                existing.add(display_name)
-                cat[display_name] = {
+                progress.progress(i / total)
+                continue
+
+            dest = config.UPLOAD_DIR / security.storage_name(user_email, display_name)
+            progress.progress((i - 0.5) / total, text=f"Indexing {display_name}…")
+            try:
+                dest.write_bytes(data)
+                result = pipeline.ingest_pdf(user_email, dest, source_name=display_name)
+                record = {
                     "origin": "upload",
                     "size": len(data),
                     "mtime": 0,
                     "pages": result.pages,
                     "chunks": result.chunks,
+                    "ocr": result.ocr_pages > 0,
                 }
-                st.toast(
-                    f"Indexed {result.source}: {result.pages} pages, "
-                    f"{result.chunks} chunks",
-                    icon="✅",
-                )
-        except Exception as exc:  # surface, don't crash the app
-            st.error(f"Failed to index {display_name}: {exc}")
-        finally:
-            # The chunked text now lives in the vector store; keeping the raw
-            # PDF around would only grow the disk (it is never read again).
-            dest.unlink(missing_ok=True)
-        progress.progress(i / total, text=f"Done {i}/{total}")
-    catalog.save(user_email, cat)
+                cat.upsert(display_name, record)  # kept even at chunks==0 so a
+                # re-upload of the same unreadable file doesn't retry forever
+                if result.chunks == 0:
+                    st.warning(
+                        f"{display_name}: no extractable text found, even "
+                        "after OCR — it may be blank or badly scanned."
+                    )
+                else:
+                    existing.add(display_name)
+                    msg = f"Indexed {result.source}: {result.pages} pages, {result.chunks} chunks"
+                    if result.ocr_pages:
+                        msg += f" ({result.ocr_pages} via OCR)"
+                    st.toast(msg, icon="✅")
+            except Exception as exc:  # surface, don't crash the app
+                st.error(f"Failed to index {display_name}: {exc}")
+            finally:
+                # The chunked text now lives in the vector store; keeping the
+                # raw PDF around would only grow the disk (it is never read
+                # again).
+                dest.unlink(missing_ok=True)
+            progress.progress(i / total, text=f"Done {i}/{total}")
     _sources_for.clear()
     # New key on rerun -> a fresh, empty file_uploader instead of one that
     # still shows the files just indexed.
@@ -903,56 +909,61 @@ def _drive_scan_view(user_email: str, root: str) -> None:
 
     # --- Phase 2: index only what's new or changed ---
     _sources_for(user_email)  # seeds the catalog for pre-catalog accounts
-    cat = catalog.load(user_email) or {}
     max_bytes = security.MAX_DRIVE_FILE_MB * 1024 * 1024
     progress = st.progress(0.0, text="Preparing to index…")
-    new = skipped = no_text = too_big = failed = 0
-    dirty = 0
+    new = skipped = no_text = too_big = failed = ocr_used = 0
     last_update = 0.0
-    for i, path in enumerate(pdfs, start=1):
-        source = drive_scan.source_name_for(root, path)
-        try:
-            fstat = path.stat()
-        except OSError:
-            failed += 1
-        else:
-            rec = cat.get(source)
-            if (
-                rec
-                and rec.get("size") == fstat.st_size
-                and rec.get("mtime") == int(fstat.st_mtime)
-            ):
-                skipped += 1
-            elif fstat.st_size > max_bytes:
-                too_big += 1
+    # One session, held open for the whole scan: each record is still
+    # committed to disk the moment its file finishes (see rag.catalog), so a
+    # crash or power loss loses at most the one file in flight — not
+    # whatever accumulated since a periodic checkpoint.
+    with catalog.session(user_email) as cat:
+        for i, path in enumerate(pdfs, start=1):
+            source = drive_scan.source_name_for(root, path)
+            try:
+                fstat = path.stat()
+            except OSError:
+                failed += 1
             else:
-                try:
-                    result = pipeline.ingest_pdf(user_email, path, source_name=source)
-                    # Zero-chunk files are recorded too, so re-scans skip them.
-                    cat[source] = {
-                        "origin": "drive",
-                        "path": drive_scan.strip_extended(path),
-                        "size": fstat.st_size,
-                        "mtime": int(fstat.st_mtime),
-                        "pages": result.pages,
-                        "chunks": result.chunks,
-                    }
-                    if result.chunks == 0:
-                        no_text += 1
-                    else:
-                        new += 1
-                    dirty += 1
-                    if dirty % 25 == 0:
-                        catalog.save(user_email, cat)  # checkpoint for resume
-                except Exception:
-                    failed += 1
-        now = time.time()
-        if now - last_update > 0.25 or i == len(pdfs):  # throttle UI updates
-            progress.progress(
-                i / len(pdfs), text=f"Indexing {i:,}/{len(pdfs):,} — {path.name}"
-            )
-            last_update = now
-    catalog.save(user_email, cat)
+                rec = cat.get(source)
+                if (
+                    rec
+                    and rec.get("size") == fstat.st_size
+                    and rec.get("mtime") == int(fstat.st_mtime)
+                ):
+                    skipped += 1
+                elif fstat.st_size > max_bytes:
+                    too_big += 1
+                else:
+                    try:
+                        result = pipeline.ingest_pdf(user_email, path, source_name=source)
+                        # Zero-chunk files are recorded too, so re-scans skip them.
+                        cat.upsert(
+                            source,
+                            {
+                                "origin": "drive",
+                                "path": drive_scan.strip_extended(path),
+                                "size": fstat.st_size,
+                                "mtime": int(fstat.st_mtime),
+                                "pages": result.pages,
+                                "chunks": result.chunks,
+                                "ocr": result.ocr_pages > 0,
+                            },
+                        )
+                        if result.chunks == 0:
+                            no_text += 1
+                        else:
+                            new += 1
+                        if result.ocr_pages:
+                            ocr_used += 1
+                    except Exception:
+                        failed += 1
+            now = time.time()
+            if now - last_update > 0.25 or i == len(pdfs):  # throttle UI updates
+                progress.progress(
+                    i / len(pdfs), text=f"Indexing {i:,}/{len(pdfs):,} — {path.name}"
+                )
+                last_update = now
     _sources_for.clear()
 
     st.success(
@@ -960,9 +971,10 @@ def _drive_scan_view(user_email: str, root: str) -> None:
         "You can now ask any question related to the documents."
     )
     st.caption(
-        f"Newly indexed: {new:,} · already up to date: {skipped:,} · "
-        f"no extractable text: {no_text:,} · larger than "
-        f"{security.MAX_DRIVE_FILE_MB} MB: {too_big:,} · failed: {failed:,}"
+        f"Newly indexed: {new:,} ({ocr_used:,} needed OCR) · already up to "
+        f"date: {skipped:,} · no extractable text: {no_text:,} · larger "
+        f"than {security.MAX_DRIVE_FILE_MB} MB: {too_big:,} · "
+        f"failed: {failed:,}"
     )
     if st.button("💬 Start asking questions", type="primary"):
         st.rerun()
