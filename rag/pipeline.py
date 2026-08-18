@@ -6,6 +6,7 @@ verbs: ``ingest_pdf`` (index a document) and ``ask`` (answer a question).
 
 from __future__ import annotations
 
+import concurrent.futures
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,17 @@ from . import config, vectorstore
 from .chunking import chunk_pages
 from .llm import Answer, answer_question
 from .pdf_loader import load_pdf
+
+# Retrieval is normally near-instant (a local ONNX embed + a local Chroma
+# query, no network). It has no built-in timeout of its own, though, so if
+# it ever gets stuck — e.g. a locked SQLite file from another process still
+# holding the same collection open — a question would otherwise hang the UI
+# forever with no error and no way out short of restarting the server. This
+# bounds that wait so the user gets a clear error message instead.
+_RETRIEVAL_TIMEOUT_S = 30
+_retrieval_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="retrieval"
+)
 
 
 @dataclass
@@ -42,5 +54,17 @@ def ingest_pdf(
 def ask(user_email: str, question: str, top_k: int | None = None) -> Answer:
     """Retrieve relevant chunks for a user and ask Kimi to answer."""
     k = top_k or config.TOP_K
-    chunks = vectorstore.query(user_email, question, k)
+    future = _retrieval_pool.submit(vectorstore.query, user_email, question, k)
+    try:
+        chunks = future.result(timeout=_RETRIEVAL_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        return Answer(
+            text=(
+                "Sorry — searching your documents is taking much longer than "
+                "usual and timed out. This can happen if another process has "
+                "the document index locked; try again in a moment, and "
+                "restart the app if it keeps happening."
+            ),
+            sources=[],
+        )
     return answer_question(question, chunks)

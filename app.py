@@ -139,14 +139,77 @@ def inject_styles() -> None:
             padding-top: 2.4rem !important;
             /* Reserve space so the last message — even a long one, like a
                multi-item reference list — can scroll fully clear above the
-               fixed question box instead of ending up hidden behind it. */
-            padding-bottom: 16rem !important;
-            min-height: calc(100vh - 80px) !important; /* keep the main area tall so the question box appears lower */
+               fixed question box instead of ending up hidden behind it.
+               The chat input can grow to several lines as the user types a
+               long question, and since it's pinned to the viewport that
+               growth eats upward into the page instead of pushing content
+               down on its own. This used to track the input's *live*
+               height via a ResizeObserver running in a components.html()
+               iframe (see git history) so the reservation stayed exact —
+               but that iframe re-ran on every single Streamlit rerun (any
+               click anywhere on the page, not just typing), adding real,
+               noticeable overhead to every interaction. The textarea is
+               already CSS-capped to max-height 12rem below, so its total
+               height (including the send button, borders, padding) has a
+               known worst case — a flat reservation sized for that worst
+               case is exact enough without live JS tracking. */
+            padding-bottom: 18rem !important;
+            /* Streamlit's own default styling makes this element height:100%
+               of its scrolling flex parent (stAppScrollToBottomContainer,
+               bounded to 100vh above) — fine normally, since content that's
+               shorter than the viewport just leaves blank space below it,
+               but it silently caps how tall this box can grow past 100vh.
+               With that cap in place the padding-bottom reserved above
+               stays *inside* that fixed 100vh box instead of extending the
+               scrollable area past it, so once real content plus the
+               reservation together exceed one viewport's height, scrolling
+               to this element's true end no longer clears the last message
+               past the fixed input — confirmed live via devtools (the
+               rendered box stayed pinned at 100vh regardless of how much
+               taller its own content grew). Overriding height:auto alone
+               isn't enough either: as a flex item inside a fixed-height
+               column, flex-shrink defaults to 1, so the browser still
+               shrinks it back down to fit the 800px parent regardless —
+               also confirmed live, the computed height stayed exactly
+               800px with height:auto alone. flex-shrink:0 stops that, so
+               it truly sizes to its real content + padding and the
+               scrollable parent's scrollHeight correctly grows to match —
+               "scroll to the end" then actually means the real end.
+               min-height keeps it filling at least one viewport when
+               there's little content, same as before. */
+            height: auto !important;
+            min-height: 100% !important;
+            flex-shrink: 0 !important;
         }
 
         /* Ensure header children stretch full width and don't get clipped */
         [data-testid="stHeader"] > div, [data-testid="stHeader"] * {
             width: 100% !important;
+        }
+
+        /* Bound the main pane to its own fixed-size, independently-scrolling
+           region instead of letting the whole document grow and scroll.
+           Previously the page itself scrolled, and every scroll-to-latest-
+           message call had to reflow the *entire* page — including
+           recalculating every fixed-position element against an ever-
+           growing document height — which got measurably slower, and less
+           reliable, the longer a chat session ran. Scrolling a viewport-
+           sized, bounded element is a cheap, isolated operation regardless
+           of how much history it holds.
+           Streamlit renders this pane under TWO different data-testids
+           depending on the page: plain "stMain" normally (e.g. the login
+           page), but "stAppScrollToBottomContainer" on any page that uses
+           st.chat_input — confirmed live via devtools, both carry the same
+           "stMain" CSS class either way. The chat page is the one that
+           actually needs this rule, so both selectors must be listed or it
+           silently never applies where it matters.
+           The navbar and chat input stay position:fixed (relative to the
+           viewport, unaffected by an ancestor's overflow) exactly as before. */
+        [data-testid="stMain"],
+        [data-testid="stAppScrollToBottomContainer"] {
+            height: 100vh !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
         }
 
         /* The application navbar is separate from Streamlit's header. Keep
@@ -245,17 +308,22 @@ def inject_styles() -> None:
             filter: brightness(1.05);
         }
 
-        /* Streamlit's own native container for the chat input
-           ([data-testid="stBottomBlockContainer"], inside
-           [data-testid="stBottom"]) keeps its own padding (16px 16px 56px,
-           confirmed via devtools) even after the rule below pulls its child
-           — the actual visible input — out via position:fixed. Left alone,
-           that empty, padded parent box still sits in the normal page flow
-           whenever "stBottom" happens to render inline in the content
-           rather than as a page-level sibling — this is the blank gap that
-           kept appearing partway through long messages. Collapsing it here
-           removes the empty box without touching the input's own fixed
-           positioning below. */
+        /* Chat input area. Streamlit natively makes [data-testid="stBottom"]
+           (the input's wrapper) position:sticky within the same scrolling
+           flex column as the messages — confirmed live via devtools, and it
+           IS an elegant idea in principle. In practice, tested live with a
+           long conversation, it does not actually track the container's
+           true bottom edge: it visibly sticks partway up the viewport,
+           overlapping message content instead of the fixed input. That's a
+           worse version of the exact bug being fixed here, so it isn't
+           used. position:fixed (relative to the viewport, immune to any of
+           the scroll container's own internal quirks) is the version that
+           has tested reliably, both now and earlier this session — so
+           stBottom's own box is collapsed to hide the empty space it would
+           otherwise leave in normal flow, and the actual input is pulled
+           out via fixed positioning. See the padding-bottom comment on
+           stMainBlockContainer below for how clearance above it is
+           reserved now that the message column's own height is bounded. */
         [data-testid="stBottom"],
         [data-testid="stBottomBlockContainer"] {
             padding: 0 !important;
@@ -264,13 +332,7 @@ def inject_styles() -> None:
             height: 0 !important;
             overflow: visible !important;
         }
-
-        /* Chat input */
         [data-testid="stChatInput"] {
-            /* Pinned to the viewport, flush with the bottom edge. Earlier
-               attempts to float this (a gap under it, a box-shadow trick to
-               fill that gap) kept introducing visual artifacts. Flush is the
-               simplest configuration that has been reliably solid. */
             position: fixed !important;
             left: clamp(1.25rem, 5.2vw, 6.25rem) !important;
             right: clamp(1.25rem, 5.2vw, 6.25rem) !important;
@@ -284,6 +346,16 @@ def inject_styles() -> None:
             background: #141a28;
             box-shadow: 0 10px 36px rgba(0,0,0,0.45);
             margin-top: 0 !important;
+        }
+        /* Cap how tall the input can grow (about 8 lines) — pasting a long
+           block of text (a whole previous answer, a paragraph to ask about)
+           would otherwise let it grow without limit, eventually consuming
+           most of the viewport and leaving no room to see the conversation
+           above it. Past this height the textarea scrolls internally
+           instead, the same way ChatGPT/Claude cap their input box. */
+        [data-testid="stChatInput"] textarea {
+            max-height: 12rem !important;
+            overflow-y: auto !important;
         }
 
         /* Keep the fixed input within the main pane while the sidebar is open. */
@@ -1053,6 +1125,12 @@ def _handle_question(user_email: str, question: str) -> None:
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
+    # Always called here, unconditionally, at this one fixed point — the
+    # LLM call below takes several seconds, plenty of time for this to load
+    # and run before the "searching..." spinner or the answer even render,
+    # so neither ends up sitting behind the fixed input, invisible, while
+    # they're on screen.
+    _scroll_to_bottom()
 
     with st.chat_message("assistant"):
         if not _sources_for(user_email):
@@ -1067,27 +1145,39 @@ def _handle_question(user_email: str, question: str) -> None:
         st.session_state.messages.append(
             {"role": "assistant", "content": answer.text}
         )
-    _scroll_to_bottom()
+    _scroll_to_bottom()  # safety net in case the answer made the page taller
 
 
 def _scroll_to_bottom() -> None:
-    """Scroll the page to its true end right after a new answer renders.
+    """Scroll the chat area to its true end right after a new answer renders.
 
-    The fixed chat input only stays clear of content once the page is
-    scrolled all the way down (the reserved padding-bottom lives past the
-    last message); without this, a fresh answer renders above the fold and
-    looks like it's partly hidden behind the input until the user manually
-    scrolls further. Runs once, right after the message that needs it is
-    already in the DOM — no competing animation to race, unlike the earlier
-    attempt to do this when a "Sources used" expander opened.
+    The fixed chat input only stays clear of content once scrolled all the
+    way down (the reserved padding-bottom lives past the last message);
+    without this, a fresh answer renders above the fold and looks like it's
+    partly hidden behind the input until the user manually scrolls further.
+
+    Targets the bounded main pane specifically rather than the whole
+    document. Scrolling the whole page used to mean reflowing *everything*
+    — every fixed-position element recalculated against a document height
+    that keeps growing with the conversation — which got slower, and less
+    reliable, the longer a session ran. The main pane is now a fixed 100vh
+    region with its own scrollbar (see inject_styles()), so this is a
+    cheap, isolated scroll regardless of how much history it holds.
+
+    Streamlit uses "stAppScrollToBottomContainer" as this pane's testid on
+    any page with st.chat_input (plain "stMain" elsewhere) — both are
+    queried since only one is ever present on a given page.
     """
     components.html(
         """
         <script>
         (function () {
             const doc = window.top.document;
-            const root = doc.scrollingElement || doc.documentElement;
-            root.scrollTo({top: root.scrollHeight, behavior: "auto"});
+            const main = doc.querySelector('[data-testid="stAppScrollToBottomContainer"]')
+                || doc.querySelector('[data-testid="stMain"]');
+            if (main) {
+                main.scrollTop = main.scrollHeight;
+            }
         })();
         </script>
         """,
