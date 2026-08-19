@@ -31,6 +31,20 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --------------------------------------------------------------------------- #
+# Drive-scan background state                                                 #
+# --------------------------------------------------------------------------- #
+# A drive scan used to run as a single blocking loop inside one script
+# execution, taking over the whole main area while it ran. Streamlit reruns
+# the *entire* script on every interaction, so asking a chat question
+# mid-scan silently abandoned it partway through — the progress bar frozen
+# on screen was a stale leftover render, not a paused-and-resumable scan.
+# Running it in a background thread instead means it keeps going regardless
+# of what the user does in the meantime; the sidebar just reads and displays
+# whatever the thread has gotten to on each rerun (see _render_drive_scan_status).
+_scan_lock = threading.Lock()
+_scan_state: dict[str, dict] = {}  # user_email -> progress dict
+
 
 # --------------------------------------------------------------------------- #
 # Look & feel                                                                 #
@@ -757,15 +771,18 @@ def sidebar(user_email: str) -> None:
                     format_func=lambda d: d.describe(),
                     key="drive_choice",
                 )
+                already_running = _scan_state.get(user_email, {}).get("phase") in (
+                    "discovering",
+                    "indexing",
+                )
                 if st.button(
                     "🔍 Scan & index this drive",
                     type="primary",
                     use_container_width=True,
+                    disabled=already_running,
                 ):
-                    # Picked up by main() after the sidebar renders; the scan
-                    # itself runs in the main area where there's room for
-                    # progress reporting.
-                    st.session_state.drive_scan_root = drive.root
+                    _start_drive_scan(user_email, drive.root)
+                    st.rerun()
         else:
             st.caption("Use + Add to upload a PDF, a folder, or scan a whole drive.")
 
@@ -773,6 +790,8 @@ def sidebar(user_email: str) -> None:
             "Index selected PDFs", type="primary", use_container_width=True
         ):
             _index_uploads(user_email, uploads)
+
+        _render_drive_scan_status(user_email)
 
         st.divider()
         sources = _sources_for(user_email)
@@ -940,62 +959,81 @@ def _index_uploads(user_email: str, uploads) -> None:
     st.rerun()
 
 
-def _drive_scan_view(user_email: str, root: str) -> None:
-    """Discover and index every PDF on ``root``, with live progress.
+def _start_drive_scan(user_email: str, root: str) -> None:
+    """Kick off a drive scan in a background thread and return immediately.
+
+    Runs independently of the Streamlit script's own execution, so it keeps
+    going regardless of what the user does meanwhile — asking a chat
+    question, searching the document list, anything — instead of being
+    silently abandoned mid-file the moment a rerun fires (Streamlit reruns
+    the whole script on every interaction; the old version ran this same
+    loop directly inside one such run, so the next interaction cut it off
+    with no way to tell it had happened short of the progress bar just
+    freezing on screen).
+    """
+    with _scan_lock:
+        _scan_state[user_email] = {
+            "root": root,
+            "phase": "discovering",
+            "found": 0,
+            "dirs": 0,
+            "index_i": 0,
+            "index_total": 0,
+            "current_file": "",
+            "new": 0,
+            "skipped": 0,
+            "no_text": 0,
+            "too_big": 0,
+            "failed": 0,
+            "ocr_used": 0,
+        }
+    threading.Thread(
+        target=_run_drive_scan, args=(user_email, root), daemon=True
+    ).start()
+
+
+def _run_drive_scan(user_email: str, root: str) -> None:
+    """Background-thread worker: discover and index every PDF on ``root``.
 
     Built for terabyte-scale drives: files are read in place (never copied),
-    and progress is checkpointed to the catalog every few files — so stopping
-    midway is safe, and a re-scan skips every file that is already indexed
-    and unchanged (same size + mtime), only touching what's new or modified.
+    and progress is checkpointed to the catalog every few files — so a crash
+    or power loss loses at most the one file in flight, not whatever
+    accumulated since a periodic checkpoint. Progress is reported by
+    mutating this user's entry in ``_scan_state`` (module-level, thread-safe
+    via ``_scan_lock``) rather than calling Streamlit UI functions directly
+    — those aren't safe to call from outside the script's own run.
     """
     from rag import catalog, drive_scan, pipeline
 
-    st.markdown(f"### 🔍 Scanning Drive {root}")
-    st.caption(
-        "You can stop anytime — scanning again later resumes where it left "
-        "off, and only new or changed PDFs are re-indexed."
-    )
+    state = _scan_state[user_email]
 
-    # --- Phase 1: discover every PDF on the drive ---
-    found_ph = st.empty()
     stats: dict = {}
     pdfs: list = []
-    last_update = 0.0
-    with st.spinner(f"Scanning all PDF files from Drive {root} — please wait…"):
-        for path in drive_scan.iter_pdfs(root, stats):
-            pdfs.append(path)
-            now = time.time()
-            if now - last_update > 0.3:  # throttle UI updates
-                found_ph.info(
-                    f"Scanning **{root}** … {len(pdfs):,} PDFs found "
-                    f"({stats.get('dirs', 0):,} folders searched)"
-                )
-                last_update = now
-    found_ph.success(
-        f"Scan complete: found {len(pdfs):,} PDF file(s) on {root} "
-        f"({stats.get('dirs', 0):,} folders searched)."
-    )
+    for path in drive_scan.iter_pdfs(root, stats):
+        pdfs.append(path)
+        with _scan_lock:
+            state["found"] = len(pdfs)
+            state["dirs"] = stats.get("dirs", 0)
+
     if not pdfs:
-        st.info("No PDF files were found on this drive.")
+        with _scan_lock:
+            state["phase"] = "empty"
         return
 
-    # --- Phase 2: index only what's new or changed ---
+    with _scan_lock:
+        state["phase"] = "indexing"
+        state["index_total"] = len(pdfs)
+
     _sources_for(user_email)  # seeds the catalog for pre-catalog accounts
     max_bytes = security.MAX_DRIVE_FILE_MB * 1024 * 1024
-    progress = st.progress(0.0, text="Preparing to index…")
-    new = skipped = no_text = too_big = failed = ocr_used = 0
-    last_update = 0.0
-    # One session, held open for the whole scan: each record is still
-    # committed to disk the moment its file finishes (see rag.catalog), so a
-    # crash or power loss loses at most the one file in flight — not
-    # whatever accumulated since a periodic checkpoint.
     with catalog.session(user_email) as cat:
         for i, path in enumerate(pdfs, start=1):
             source = drive_scan.source_name_for(root, path)
             try:
                 fstat = path.stat()
             except OSError:
-                failed += 1
+                with _scan_lock:
+                    state["failed"] += 1
             else:
                 rec = cat.get(source)
                 if (
@@ -1003,9 +1041,11 @@ def _drive_scan_view(user_email: str, root: str) -> None:
                     and rec.get("size") == fstat.st_size
                     and rec.get("mtime") == int(fstat.st_mtime)
                 ):
-                    skipped += 1
+                    with _scan_lock:
+                        state["skipped"] += 1
                 elif fstat.st_size > max_bytes:
-                    too_big += 1
+                    with _scan_lock:
+                        state["too_big"] += 1
                 else:
                     try:
                         result = pipeline.ingest_pdf(user_email, path, source_name=source)
@@ -1022,34 +1062,68 @@ def _drive_scan_view(user_email: str, root: str) -> None:
                                 "ocr": result.ocr_pages > 0,
                             },
                         )
-                        if result.chunks == 0:
-                            no_text += 1
-                        else:
-                            new += 1
-                        if result.ocr_pages:
-                            ocr_used += 1
+                        with _scan_lock:
+                            if result.chunks == 0:
+                                state["no_text"] += 1
+                            else:
+                                state["new"] += 1
+                            if result.ocr_pages:
+                                state["ocr_used"] += 1
                     except Exception:
-                        failed += 1
-            now = time.time()
-            if now - last_update > 0.25 or i == len(pdfs):  # throttle UI updates
-                progress.progress(
-                    i / len(pdfs), text=f"Indexing {i:,}/{len(pdfs):,} — {path.name}"
-                )
-                last_update = now
-    _sources_for.clear()
+                        with _scan_lock:
+                            state["failed"] += 1
+            with _scan_lock:
+                state["index_i"] = i
+                state["current_file"] = path.name
+            _sources_for.clear()
+    with _scan_lock:
+        state["phase"] = "done"
 
-    st.success(
-        "All PDF files have been scanned successfully. "
-        "You can now ask any question related to the documents."
-    )
-    st.caption(
-        f"Newly indexed: {new:,} ({ocr_used:,} needed OCR) · already up to "
-        f"date: {skipped:,} · no extractable text: {no_text:,} · larger "
-        f"than {security.MAX_DRIVE_FILE_MB} MB: {too_big:,} · "
-        f"failed: {failed:,}"
-    )
-    if st.button("💬 Start asking questions", type="primary"):
-        st.rerun()
+
+def _render_drive_scan_status(user_email: str) -> None:
+    """Sidebar status block for a scan running in the background, if any.
+
+    Reads a snapshot of this user's ``_scan_state`` entry (if present) and
+    renders it compactly. Only updates on the app's normal reruns — same as
+    everything else in the sidebar — so it visibly catches up the moment the
+    user does anything at all (send a chat message, search the document
+    list, ...), without needing a background poll/refresh of its own.
+    """
+    with _scan_lock:
+        state = dict(_scan_state.get(user_email, {}))
+    if not state:
+        return
+
+    phase = state["phase"]
+    if phase == "discovering":
+        st.info(
+            f"🔍 Scanning **{state['root']}** … {state['found']:,} PDFs found "
+            f"({state['dirs']:,} folders searched)"
+        )
+    elif phase == "indexing":
+        total = state["index_total"]
+        i = state["index_i"]
+        st.progress(
+            i / total if total else 0.0,
+            text=f"Indexing {i:,}/{total:,} — {state['current_file']}",
+        )
+    elif phase == "empty":
+        st.info(f"No PDF files were found on {state['root']}.")
+        with _scan_lock:
+            _scan_state.pop(user_email, None)
+    elif phase == "done":
+        st.success(f"Scan of {state['root']} complete.")
+        st.caption(
+            f"Newly indexed: {state['new']:,} ({state['ocr_used']:,} needed "
+            f"OCR) · already up to date: {state['skipped']:,} · no "
+            f"extractable text: {state['no_text']:,} · larger than "
+            f"{security.MAX_DRIVE_FILE_MB} MB: {state['too_big']:,} · "
+            f"failed: {state['failed']:,}"
+        )
+        if st.button("Dismiss", key="dismiss_scan_summary"):
+            with _scan_lock:
+                _scan_state.pop(user_email, None)
+            st.rerun()
 
 
 def _navbar(user_email: str) -> None:
@@ -1194,11 +1268,6 @@ def main() -> None:
         return
     user_email = st.session_state.user_email
     sidebar(user_email)
-    scan_root = st.session_state.pop("drive_scan_root", None)
-    if scan_root:
-        _navbar(user_email)
-        _drive_scan_view(user_email, scan_root)
-        return
     chat_view(user_email)
 
 
